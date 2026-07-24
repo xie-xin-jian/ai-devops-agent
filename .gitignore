@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.env
+*.db
+venv/
+.venv/
+node_modules/
+dist/
+build/
+.idea/
+.vscode/
+*.log
+
+# 运行时生成的数据
+.tasks/
+.mcp_servers.json
+.memory/
+
+# Trae IDE 相关
+.trae/
+
+# 前端构建产物（服务器上重新构建）
+static/
+tsconfig.tsbuildinfo
