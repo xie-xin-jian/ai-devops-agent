@@ -8,6 +8,15 @@
 import subprocess
 import shutil
 
+# Docker SDK（通过 docker.sock 直接通信，无需 docker CLI）
+try:
+    import docker
+    _docker_client = docker.from_env()
+    _DOCKER_AVAILABLE = True
+except Exception:
+    _docker_client = None
+    _DOCKER_AVAILABLE = False
+
 # 命令超时时间（秒）
 _TIMEOUT = 15
 
@@ -45,9 +54,26 @@ def run_disk_usage() -> str:
 
 
 def run_docker_ps() -> str:
-    """列出所有 Docker 容器（docker ps -a）。"""
-    return _run_cmd(["docker", "ps", "-a", "--format",
-                     "table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"])
+    """列出所有 Docker 容器（通过 Docker SDK）。"""
+    if not _DOCKER_AVAILABLE:
+        return "Error: Docker SDK 不可用（docker.sock 未挂载或容器未安装 docker 包）"
+    try:
+        containers = _docker_client.containers.list(all=True)
+        if not containers:
+            return "(no containers)"
+        lines = ["CONTAINER ID    NAMES                IMAGE               STATUS              PORTS"]
+        for c in containers[:50]:
+            ports = ",".join(
+                f"{p.get('HostPort','')}->{p.get('ContainerPort','')}/{p.get('Type','tcp')}"
+                for p in (c.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}).values()
+                if p
+            ) or "-"
+            lines.append(
+                f"{c.short_id:<14} {c.name:<20} {c.image.tags[0] if c.image.tags else c.image.id[:12]:<18} {c.status:<19} {ports}"
+            )
+        return "\n".join(lines)[:5000]
+    except Exception as e:
+        return f"Error: {e}"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -174,7 +200,7 @@ def run_system_logs(service: str = "", lines: int = 50) -> str:
 
 
 def run_docker_logs(container: str, lines: int = 50) -> str:
-    """查看 Docker 容器日志。
+    """查看 Docker 容器日志（通过 Docker SDK）。
 
     Args:
         container: 容器 ID 或名称
@@ -182,14 +208,44 @@ def run_docker_logs(container: str, lines: int = 50) -> str:
     """
     if not container or not container.strip():
         return "Error: container ID or name is required"
+    if not _DOCKER_AVAILABLE:
+        return "Error: Docker SDK 不可用（docker.sock 未挂载）"
     n = max(1, min(lines, 200))
-    return _run_cmd(["docker", "logs", "--tail", str(n), container.strip()])
+    try:
+        c = _docker_client.containers.get(container.strip())
+        logs = c.logs(tail=n, timestamps=True).decode("utf-8", errors="replace")
+        return logs[-5000:] if logs else "(no output)"
+    except Exception as e:
+        return f"Error: {e}"
 
 
 def run_docker_stats() -> str:
-    """查看 Docker 容器资源使用情况（docker stats，无流式）。"""
-    return _run_cmd(["docker", "stats", "--no-stream", "--format",
-                     "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}"])
+    """查看 Docker 容器资源使用情况（通过 Docker SDK）。"""
+    if not _DOCKER_AVAILABLE:
+        return "Error: Docker SDK 不可用（docker.sock 未挂载）"
+    try:
+        containers = _docker_client.containers.list()
+        if not containers:
+            return "(no running containers)"
+        lines = ["NAME                CPU %     MEM USAGE / LIMIT      NET I/O           BLOCK I/O"]
+        for c in containers[:50]:
+            stats = c.stats(stream=False)
+            cpu_delta = stats["cpu_stats"]["cpu_usage"]["total_usage"] - stats["precpu_stats"]["cpu_usage"]["total_usage"]
+            cpu_percent = (cpu_delta / 1e9) * 100.0
+            mem = stats["memory_stats"].get("usage", 0) / 1024 / 1024
+            mem_limit = stats["memory_stats"].get("limit", 0) / 1024 / 1024
+            net_in = sum(v[0] for v in (stats.get("networks", {}).values() or []) if v)
+            net_out = sum(v[1] for v in (stats.get("networks", {}).values() or []) if v)
+            block_in = sum(v[0] for v in (stats.get("blkio_stats", {}).get("io_service_bytes_recursive", []) or []) if v)
+            block_out = sum(v[1] for v in (stats.get("blkio_stats", {}).get("io_service_bytes_recursive", []) or []) if v)
+            lines.append(
+                f"{c.name:<19} {cpu_percent:<9.1f} {mem:>7.1f}/{mem_limit:.0f} MiB   "
+                f"{net_in/1024:>8.1f}/{net_out/1024:<8.1f} KiB   "
+                f"{block_in/1024:>6.1f}/{block_out/1024:<6.1f} KiB"
+            )
+        return "\n".join(lines)[:5000]
+    except Exception as e:
+        return f"Error: {e}"
 
 
 # ═══════════════════════════════════════════════════════════
