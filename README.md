@@ -2,7 +2,7 @@
 
 一个基于 Harness 工程范式的 AI 运维助手，通过自然语言对话完成 DevOps 任务。核心是一个带工具调用、权限管控、上下文压缩、错误恢复的 Agent 循环，支持任务编排、定时巡检、后台任务和 MCP 动态工具扩展。
 
-灵感来源于 [learn-claude-code s20 教学课程](https://github.com/shareAI-lab/learn-claude-code/blob/main/s20_comprehensive/code.py)，并在此基础上做了模块化工程重构，接入 FastAPI 后端与 React 可视化前端。
+采用模块化工程架构，后端基于 FastAPI，前端基于 React 可视化，支持多会话隔离、定时巡检与 MCP 动态工具扩展。
 
 ## 核心特性
 
@@ -156,26 +156,31 @@ ai-devops-agent/
 │   └── routes/                 # 路由模块
 │       ├── task.py             # 任务管理路由
 │       ├── cron_route.py       # Cron 管理路由
-│       └── mcp_route.py        # MCP 管理路由
+│       ├── mcp_route.py        # MCP 管理路由
+│       └── skill_route.py      # Skill 管理路由
 ├── frontend/                   # React 可视化前端
 │   ├── src/
 │   │   ├── api/                # API 适配层
 │   │   ├── components/         # 通用 UI 组件
-│   │   ├── pages/              # 5 个功能页面
+│   │   ├── pages/              # 6 个功能页面
 │   │   ├── store/              # Zustand 状态管理
 │   │   └── types/              # TypeScript 类型定义
 │   ├── package.json
 │   ├── vite.config.ts
 │   └── tailwind.config.js
+├── skills/                     # Agent 技能库（YAML frontmatter）
+├── mcp_servers/                # MCP 服务器实现
+├── tests/                      # pytest 测试套件
+│   ├── conftest.py             # 测试 fixtures
+│   ├── test_permission.py      # 权限系统测试
+│   └── test_task_system.py     # 任务系统测试
 ├── static/                     # 前端构建产物（供后端托管）
-├── reference/                  # 参考资料
-│   └── s20_code.py             # 原始教学版代码
 ├── run.py                      # 启动入口
 ├── Dockerfile                  # Docker 部署
 ├── docker-compose.yml          # 容器编排
 ├── requirements.txt            # Python 依赖
-├── test_permission.py          # 权限系统测试
-└── test_task_system.py         # 任务系统测试
+├── pytest.ini                  # pytest 配置
+└── .env.example                # 环境变量示例
 ```
 
 ## Agent 工具（22 个）
@@ -219,9 +224,10 @@ curl -X POST http://localhost:8000/api/cron/ \
 ## 测试
 
 ```bash
-python test_permission.py
-python test_task_system.py
+pytest
 ```
+
+测试套件位于 `tests/` 目录，使用 `conftest.py` 中的 `isolated_tasks_dir` fixture 隔离测试数据，覆盖权限拦截、路径逃逸防护、任务图生命周期与状态机非法转移等核心逻辑。
 
 ## License
 
