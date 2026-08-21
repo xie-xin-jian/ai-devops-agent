@@ -44,3 +44,13 @@ DENY_LIST = ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if="]
 DESTRUCTIVE = ["rm ", "> /etc/", "chmod 777"]
 
 CLI_ACTIVE = False
+
+# CORS 允许的来源（逗号分隔），生产环境务必配置具体域名
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.environ.get(
+        "ALLOWED_ORIGINS",
+        "http://localhost:5173,http://localhost:8000,"
+        "http://127.0.0.1:5173,http://127.0.0.1:8000"
+    ).split(",")
+    if o.strip()
+]

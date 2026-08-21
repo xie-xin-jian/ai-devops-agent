@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 from agent.config import DENY_LIST, DESTRUCTIVE, CLI_ACTIVE, WORKDIR
 
 
@@ -51,7 +51,7 @@ def permission_hook(block):
         except Exception:
             return f"Permission denied: path escapes workspace: {path}"
 
-    # MCP destructive 工具审批（对齐 s20 line 918-922）
+    # MCP destructive 工具审批
     # mcp__deploy__trigger 这类破坏性工具需要用户确认
     from agent.mcp import is_destructive_mcp_tool
     if is_destructive_mcp_tool(name):

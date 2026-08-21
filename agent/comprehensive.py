@@ -1,7 +1,7 @@
 """
-s20 风格的综合 Agent —— 所有机制组装在一个 loop 里。
+综合 Agent —— 所有运维机制组装在一个 loop 里。
 
-基于 learn-claude-code s20 的设计理念，将以下机制整合到同一个 agent loop 中：
+将以下机制整合到同一个 agent loop 中，面向 DevOps 场景：
 - 工具分发 (tool dispatch)
 - 权限系统 (permission)
 - 钩子系统 (hooks)
@@ -16,7 +16,7 @@ s20 风格的综合 Agent —— 所有机制组装在一个 loop 里。
 - 后台任务 (background tasks)
 - 定时调度 (cron)
 
-与 s20 教学版的区别：模块化拆分，可通过类实例化配置。
+采用模块化拆分，可通过类实例化配置，便于多会话隔离与扩展。
 """
 
 import json
@@ -37,8 +37,7 @@ from .hooks import HOOKS, register_hook, trigger_hooks
 from .permission import permission_hook
 from .todo import todo_write, CURRENT_TODOS
 from .tools import ALL_TOOL_SCHEMAS, ALL_TOOL_HANDLERS
-from .tools.shell import run_bash
-from .tools.file_tools import run_read, run_write, run_edit, run_glob
+
 from .skill import list_skills, load_skill
 from .subagent import spawn_subagent, extract_text, has_tool_use, call_tool_handler
 from .context_compact import (
@@ -81,6 +80,7 @@ class ComprehensiveAgent:
         self.model = MODEL_ID
         self.recovery = RecoveryState()
         self.memory = MemorySystem()
+        self._last_user_query = ""
         self.messages: list = []
         self._register_default_hooks()
         self._register_default_tools()
@@ -119,6 +119,7 @@ class ComprehensiveAgent:
         self._add_todo_tool()
         self._add_task_tools()
         self._add_skill_tools()
+        self._add_memory_tools()
         self._add_subagent_tool()
         self._add_compact_tool()
         self._add_cron_tools()
@@ -242,6 +243,40 @@ class ComprehensiveAgent:
         self.tools.extend(tools)
         self.handlers.update(handlers)
 
+    def _add_memory_tools(self):
+        tools = [
+            {
+                "name": "add_memory",
+                "description": "Save a piece of information to long-term memory for future sessions.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string"},
+                        "importance": {"type": "integer", "default": 3},
+                        "category": {"type": "string", "default": "general"},
+                    },
+                    "required": ["content"],
+                },
+            },
+            {
+                "name": "search_memory",
+                "description": "Search long-term memory for relevant past information.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        ]
+        handlers = {
+            "add_memory": lambda content, importance=3, category="general": (
+                f"Memory saved (id={self.memory.add(content, importance, category)['id']}): {content[:80]}"
+            ),
+            "search_memory": lambda query: self.memory.format_relevant(query),
+        }
+        self.tools.extend(tools)
+        self.handlers.update(handlers)
+
     def _add_subagent_tool(self):
         schema = {
             "name": "spawn_subagent",
@@ -278,7 +313,7 @@ class ComprehensiveAgent:
         tools = [
             {
                 "name": "schedule_cron",
-                "description": "Schedule a recurring prompt using cron syntax (5 fields: min hour dom month dow).",
+                "description": "Schedule a recurring prompt using cron syntax (5 fields: min hour dom month dow). Cron jobs will auto-execute in background at the scheduled time (no need to wait for user message).",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -291,7 +326,7 @@ class ComprehensiveAgent:
             },
             {
                 "name": "list_crons",
-                "description": "List all scheduled cron jobs.",
+                "description": "List all scheduled cron jobs with their last run status.",
                 "input_schema": {"type": "object", "properties": {}, "required": []},
             },
             {
@@ -303,18 +338,41 @@ class ComprehensiveAgent:
                     "required": ["job_id"],
                 },
             },
+            {
+                "name": "list_cron_logs",
+                "description": "List cron job execution history (recent N runs). Each entry has fired_at, finished_at, success, output, error.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "job_id": {"type": "string", "description": "Optional. Filter by specific job ID."},
+                        "limit": {"type": "integer", "default": 10, "description": "Max number of logs to return, default 10."},
+                    },
+                    "required": [],
+                },
+            },
         ]
-        from .cron import scheduled_jobs
+        from .cron import scheduled_jobs, _last_fired, list_cron_run_logs
 
         handlers = {
             "schedule_cron": lambda cron, prompt, recurring=True: (
                 lambda j: f"Scheduled {j.id} ({j.cron})" if hasattr(j, "id") else str(j)
             )(schedule_job(cron, prompt, recurring)),
             "list_crons": lambda: "\n".join(
-                f"  {j.id}: {j.cron} {'recurring' if j.recurring else 'once'} - {j.prompt[:50]}"
+                f"  {j.id}: {j.cron} {'recurring' if j.recurring else 'once'}"
+                f" | last_run={_last_fired.get(j.id).strftime('%H:%M:%S') if _last_fired.get(j.id) else 'never'}"
+                f" | prompt={j.prompt[:50]}"
                 for j in scheduled_jobs.values()
             ) or "No scheduled jobs.",
             "cancel_cron": lambda job_id: cancel_job(job_id),
+            "list_cron_logs": lambda job_id=None, limit=10: (
+                (lambda logs: "\n".join(
+                    f"  [{log.get('fired_at', '?')}] job={log.get('job_id','?')[:12]} "
+                    f"success={log.get('success')} "
+                    f"{(log.get('output') or '')[:80]}"
+                    f"{' error=' + str(log.get('error'))[:60] if log.get('error') else ''}"
+                    for log in logs
+                ) or "No cron run logs yet.")(list_cron_run_logs(job_id=job_id, limit=limit))
+            ),
         }
         self.tools.extend(tools)
         self.handlers.update(handlers)
@@ -342,6 +400,10 @@ class ComprehensiveAgent:
             f"Current time: {datetime.now().isoformat(timespec='seconds')}",
             "Skills catalog:\n" + list_skills() + "\nUse load_skill(name) when a skill is relevant.",
         ]
+        if self._last_user_query:
+            memories_text = self.memory.format_relevant(self._last_user_query)
+            if not memories_text.startswith("(no relevant"):
+                sections.append("Relevant memories:\n" + memories_text)
         mcp_names = [s["name"] for s in list_connected_mcp()]
         if mcp_names:
             sections.append(f"Connected MCP servers: {', '.join(mcp_names)}")
@@ -396,8 +458,14 @@ class ComprehensiveAgent:
         trigger_hooks("PostToolUse", block, output)
         return output
 
-    async def run(self, user_message: str) -> str:
+    def run(self, user_message: str) -> str:
+        """同步执行 Agent 循环。
+
+        内部使用同步 Anthropic client，API 层应通过 run_in_threadpool 调用
+        以避免阻塞 event loop。
+        """
         trigger_hooks("UserPromptSubmit", user_message)
+        self._last_user_query = user_message
         self.messages.append({"role": "user", "content": user_message})
 
         bg_notifications = collect_background_results()
