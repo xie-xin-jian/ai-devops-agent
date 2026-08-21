@@ -2,10 +2,11 @@ import time
 import random
 import threading
 import json
-from dataclasses import dataclass, asdict
+from pathlib import Path
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta
 from typing import Optional
-from agent.config import DURABLE_CRON_PATH
+from agent.config import DURABLE_CRON_PATH, WORKDIR
 
 
 @dataclass
@@ -21,6 +22,16 @@ scheduled_jobs: dict[str, CronJob] = {}
 cron_queue: list[CronJob] = []
 cron_lock = threading.Lock()
 _last_fired: dict[str, datetime] = {}
+
+# 后台执行用：防止同一个 job_id 重入（前一次没跑完，下一分钟又触发）
+_running_job_ids: set[str] = set()
+_running_lock = threading.Lock()
+
+# 后台 Agent 单例（懒加载，避免循环 import）
+_bg_agent = None
+_bg_agent_lock = threading.Lock()
+
+CRON_LOG_DIR = WORKDIR / ".cron_logs"
 
 
 def _cron_field_matches(field: str, value: int) -> bool:
@@ -193,6 +204,61 @@ def cancel_job(job_id: str) -> str:
     return f"Job {job_id} cancelled"
 
 
+def _get_bg_agent():
+    """获取后台专用的 Agent 单例（懒加载，避免与用户 session 串话）。"""
+    global _bg_agent
+    if _bg_agent is not None:
+        return _bg_agent
+    with _bg_agent_lock:
+        if _bg_agent is not None:
+            return _bg_agent
+        from agent.comprehensive import ComprehensiveAgent
+        from agent.mcp import load_all_custom_servers
+        load_all_custom_servers()
+        _bg_agent = ComprehensiveAgent()
+    return _bg_agent
+
+
+def _save_cron_run_log(job: CronJob, fired_at: datetime, output: str, error: Optional[str] = None):
+    """把 Cron 执行结果落盘，方便用户之后查历史。"""
+    try:
+        CRON_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        ts = fired_at.strftime("%Y%m%d_%H%M%S")
+        log_path = CRON_LOG_DIR / f"{job.id}__{ts}.json"
+        log = {
+            "job_id": job.id,
+            "cron": job.cron,
+            "prompt": job.prompt,
+            "fired_at": fired_at.isoformat(timespec="seconds"),
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "success": error is None,
+            "output": output,
+            "error": error,
+        }
+        with open(log_path, "w", encoding="utf-8") as f:
+            json.dump(log, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _execute_cron_job_sync(job: CronJob, fired_at: datetime):
+    """真正在后台线程执行 Cron 任务。阻塞函数，由外层 threading.Thread 调用。"""
+    # 防重入
+    with _running_lock:
+        if job.id in _running_job_ids:
+            return
+        _running_job_ids.add(job.id)
+    try:
+        agent = _get_bg_agent()
+        output = agent.run(job.prompt)
+        _save_cron_run_log(job, fired_at, output)
+    except Exception as e:
+        _save_cron_run_log(job, fired_at, "", error=str(e))
+    finally:
+        with _running_lock:
+            _running_job_ids.discard(job.id)
+
+
 def cron_scheduler_loop():
     while True:
         now = datetime.now()
@@ -203,12 +269,22 @@ def cron_scheduler_loop():
                 if cron_matches(job.cron, now_truncated):
                     last = _last_fired.get(job_id)
                     if last is None or last < now_truncated:
+                        # 兼容逻辑：也放进队列，用户下次发消息时会收到"有个 cron 执行了"的提示
                         cron_queue.append(job)
                         _last_fired[job_id] = now_truncated
 
                         if not job.recurring:
                             del scheduled_jobs[job_id]
                             _last_fired.pop(job_id, None)
+
+                        # 真正的自动执行：起一个后台线程跑 Agent，不等用户发消息
+                        t = threading.Thread(
+                            target=_execute_cron_job_sync,
+                            args=(job, now_truncated),
+                            daemon=True,
+                            name=f"cron-exec-{job.id}",
+                        )
+                        t.start()
 
             if any(job.durable for job in cron_queue) or not all(
                 jid in scheduled_jobs for jid in list(_last_fired.keys())
@@ -223,3 +299,24 @@ def consume_cron_queue() -> list[CronJob]:
         jobs = list(cron_queue)
         cron_queue.clear()
         return jobs
+
+
+def list_cron_run_logs(job_id: Optional[str] = None, limit: int = 20) -> list[dict]:
+    """查看 Cron 执行历史。不传 job_id 则查所有。"""
+    try:
+        if not CRON_LOG_DIR.exists():
+            return []
+        files = sorted(CRON_LOG_DIR.glob("*.json"), reverse=True)
+        result = []
+        for p in files[:limit]:
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    log = json.load(f)
+                if job_id and log.get("job_id") != job_id:
+                    continue
+                result.append(log)
+            except Exception:
+                pass
+        return result
+    except Exception:
+        return []
