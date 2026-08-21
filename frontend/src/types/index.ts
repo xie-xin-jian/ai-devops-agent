@@ -39,15 +39,21 @@ export interface MCPServer {
   connected: boolean
   tool_count: number
   description?: string
-  type?: 'builtin' | 'custom' | 'stdio'  // 服务器类型
+  type?: 'builtin' | 'custom' | 'stdio' | 'sse'  // 服务器类型
 }
 
-// 标准 MCP 服务器连接参数
+// 标准 MCP 服务器连接参数（Stdio 本地子进程）
 export interface StdioMCPConfig {
   name: string
   command: string
   args: string[]
   cwd?: string
+}
+
+// 远程 MCP 服务器连接参数（SSE 远程连接）
+export interface SseMCPConfig {
+  name: string
+  url: string
 }
 
 // 工具

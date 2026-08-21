@@ -1,4 +1,4 @@
-import type { Message, Task, CronJob, MCPServer, Tool, HealthStatus, StdioMCPConfig, Skill, SkillDetail } from '../types'
+import type { Message, Task, CronJob, MCPServer, Tool, HealthStatus, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail } from '../types'
 
 const API_BASE = ''
 
@@ -24,10 +24,10 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 
 // 对话
 export const chatApi = {
-  send: (message: string) =>
-    request<{ response: string; message_id?: string }>('/api/chat/', {
+  send: (message: string, sessionId?: string) =>
+    request<{ response: string; session_id: string }>('/api/chat/', {
       method: 'POST',
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, session_id: sessionId }),
     }),
 }
 
@@ -104,6 +104,7 @@ export const mcpApi = {
     const availableArr: string[] = Array.isArray(res.available) ? res.available : []
     const customArr: any[] = Array.isArray(res.custom) ? res.custom : []
     const stdioArr: string[] = Array.isArray(res.stdio_servers) ? res.stdio_servers : []
+    const sseArr: string[] = Array.isArray(res.sse_servers) ? res.sse_servers : []
 
     // 提取名称集合
     const connectedNames = new Set(connectedArr.map((c: any) =>
@@ -115,18 +116,20 @@ export const mcpApi = {
     ).filter(Boolean))
 
     const stdioNames = new Set(stdioArr)
+    const sseNames = new Set(sseArr)
 
     // 收集所有服务器名称
     const allNames = new Set<string>()
     availableArr.forEach((n: string) => allNames.add(n))
     customNames.forEach((n: string) => allNames.add(n))
     stdioNames.forEach((n: string) => allNames.add(n))
+    sseNames.forEach((n: string) => allNames.add(n))
     connectedNames.forEach((n: string) => allNames.add(n))
 
     // 构建描述和工具数量映射
     const descMap: Record<string, string> = {}
     const toolCountMap: Record<string, number> = {}
-    const typeMap: Record<string, 'builtin' | 'custom' | 'stdio'> = {}
+    const typeMap: Record<string, 'builtin' | 'custom' | 'stdio' | 'sse'> = {}
 
     availableArr.forEach((n: string) => {
       descMap[n] = 'Mock 服务器'
@@ -142,6 +145,10 @@ export const mcpApi = {
     stdioArr.forEach((n: string) => {
       descMap[n] = '标准 MCP 服务器'
       typeMap[n] = 'stdio'
+    })
+    sseArr.forEach((n: string) => {
+      descMap[n] = '远程 MCP 服务器 (SSE)'
+      typeMap[n] = 'sse'
     })
     connectedArr.forEach((c: any) => {
       if (c && typeof c === 'object' && c.name) {
@@ -177,6 +184,17 @@ export const mcpApi = {
     }),
   disconnectStdio: (name: string) =>
     request<any>('/api/mcp/stdio/disconnect', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  // 远程 MCP 服务器（SSE）
+  connectSse: (config: SseMCPConfig) =>
+    request<any>('/api/mcp/sse/connect', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    }),
+  disconnectSse: (name: string) =>
+    request<any>('/api/mcp/sse/disconnect', {
       method: 'POST',
       body: JSON.stringify({ name }),
     }),
@@ -282,6 +300,11 @@ export const systemApi = {
     })
     return { tools }
   },
-  reset: () => request<{ ok: boolean }>('/api/reset/', { method: 'POST' }),
-  messages: () => request<{ messages: Message[] }>('/api/messages/'),
+  reset: (sessionId?: string) =>
+    request<{ status: string }>('/api/reset/', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId }),
+    }),
+  messages: (sessionId?: string) =>
+    request<{ messages: Message[] }>(`/api/messages/?session_id=${encodeURIComponent(sessionId || '')}`),
 }

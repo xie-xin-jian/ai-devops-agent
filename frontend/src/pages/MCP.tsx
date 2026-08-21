@@ -5,13 +5,18 @@ import Button from '../components/Button'
 import Badge from '../components/Badge'
 
 export default function MCP() {
-  const { mcpServers, fetchMcpServers, connectMcp, disconnectMcp, connectStdioMcp, disconnectStdioMcp } = useAppStore()
+  const { mcpServers, fetchMcpServers, connectMcp, disconnectMcp, connectStdioMcp, disconnectStdioMcp, connectSseMcp, disconnectSseMcp } = useAppStore()
   const [showForm, setShowForm] = useState(false)
+  const [formMode, setFormMode] = useState<'stdio' | 'sse'>('stdio')
   const [form, setForm] = useState({
     name: '',
     command: 'python',
     args: '',
     cwd: '',
+  })
+  const [sseForm, setSseForm] = useState({
+    name: '',
+    url: '',
   })
   const [submitting, setSubmitting] = useState(false)
 
@@ -22,23 +27,35 @@ export default function MCP() {
   const handleDisconnect = (s: { name: string; type?: string }) => {
     if (s.type === 'stdio') {
       disconnectStdioMcp(s.name)
+    } else if (s.type === 'sse') {
+      disconnectSseMcp(s.name)
     } else {
       disconnectMcp(s.name)
     }
   }
 
   const handleSubmit = async () => {
-    if (!form.name.trim() || !form.command.trim()) return
     setSubmitting(true)
     try {
-      await connectStdioMcp({
-        name: form.name.trim(),
-        command: form.command.trim(),
-        args: form.args.trim() ? form.args.split(/\s+/) : [],
-        cwd: form.cwd.trim() || undefined,
-      })
-      setShowForm(false)
-      setForm({ name: '', command: 'python', args: '', cwd: '' })
+      if (formMode === 'sse') {
+        if (!sseForm.name.trim() || !sseForm.url.trim()) return
+        await connectSseMcp({
+          name: sseForm.name.trim(),
+          url: sseForm.url.trim(),
+        })
+        setShowForm(false)
+        setSseForm({ name: '', url: '' })
+      } else {
+        if (!form.name.trim() || !form.command.trim()) return
+        await connectStdioMcp({
+          name: form.name.trim(),
+          command: form.command.trim(),
+          args: form.args.trim() ? form.args.split(/\s+/) : [],
+          cwd: form.cwd.trim() || undefined,
+        })
+        setShowForm(false)
+        setForm({ name: '', command: 'python', args: '', cwd: '' })
+      }
     } finally {
       setSubmitting(false)
     }
@@ -47,6 +64,7 @@ export default function MCP() {
   const typeLabel = (type?: string) => {
     switch (type) {
       case 'stdio': return '标准 MCP'
+      case 'sse': return '远程 MCP'
       case 'custom': return '自定义'
       case 'builtin': return 'Mock'
       default: return ''
@@ -56,6 +74,7 @@ export default function MCP() {
   const typeBadgeVariant = (type?: string): 'default' | 'success' | 'info' => {
     switch (type) {
       case 'stdio': return 'info'
+      case 'sse': return 'info'
       case 'custom': return 'success'
       default: return 'default'
     }
@@ -83,13 +102,13 @@ export default function MCP() {
           </div>
         </div>
 
-        {/* 连接标准 MCP 服务器表单 */}
+        {/* 连接 MCP 服务器表单 */}
         {showForm && (
           <div className="mb-6 rounded-xl border border-border-primary bg-bg-secondary p-5">
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Server size={18} className="text-accent-primary" />
-                <h3 className="font-medium">连接标准 MCP 服务器</h3>
+                <h3 className="font-medium">连接 MCP 服务器</h3>
               </div>
               <button
                 onClick={() => setShowForm(false)}
@@ -98,53 +117,105 @@ export default function MCP() {
                 <X size={18} />
               </button>
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-sm text-text-secondary">服务器名称 *</label>
-                <input
-                  type="text"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="alert_server"
-                  className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent-primary"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm text-text-secondary">命令 *</label>
-                <input
-                  type="text"
-                  value={form.command}
-                  onChange={(e) => setForm({ ...form, command: e.target.value })}
-                  placeholder="python"
-                  className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent-primary"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm text-text-secondary">参数（空格分隔）</label>
-                <input
-                  type="text"
-                  value={form.args}
-                  onChange={(e) => setForm({ ...form, args: e.target.value })}
-                  placeholder="mcp_servers/alert_server.py"
-                  className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent-primary"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm text-text-secondary">工作目录（可选）</label>
-                <input
-                  type="text"
-                  value={form.cwd}
-                  onChange={(e) => setForm({ ...form, cwd: e.target.value })}
-                  placeholder="D:/ai_agent/ai-devops-agent"
-                  className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent-primary"
-                />
-              </div>
+            {/* 模式切换 Tab */}
+            <div className="mb-4 flex gap-2">
+              <button
+                onClick={() => setFormMode('stdio')}
+                className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                  formMode === 'stdio'
+                    ? 'bg-accent-primary text-white'
+                    : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'
+                }`}
+              >
+                本地 Stdio
+              </button>
+              <button
+                onClick={() => setFormMode('sse')}
+                className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                  formMode === 'sse'
+                    ? 'bg-accent-primary text-white'
+                    : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'
+                }`}
+              >
+                远程 SSE
+              </button>
             </div>
+            {formMode === 'sse' ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm text-text-secondary">服务器名称 *</label>
+                  <input
+                    type="text"
+                    value={sseForm.name}
+                    onChange={(e) => setSseForm({ ...sseForm, name: e.target.value })}
+                    placeholder="remote_mcp"
+                    className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent-primary"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm text-text-secondary">SSE 端点地址 *</label>
+                  <input
+                    type="text"
+                    value={sseForm.url}
+                    onChange={(e) => setSseForm({ ...sseForm, url: e.target.value })}
+                    placeholder="http://localhost:8080/sse"
+                    className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent-primary"
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm text-text-secondary">服务器名称 *</label>
+                  <input
+                    type="text"
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    placeholder="alert_server"
+                    className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent-primary"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm text-text-secondary">命令 *</label>
+                  <input
+                    type="text"
+                    value={form.command}
+                    onChange={(e) => setForm({ ...form, command: e.target.value })}
+                    placeholder="python"
+                    className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent-primary"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm text-text-secondary">参数（空格分隔）</label>
+                  <input
+                    type="text"
+                    value={form.args}
+                    onChange={(e) => setForm({ ...form, args: e.target.value })}
+                    placeholder="mcp_servers/alert_server.py"
+                    className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent-primary"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm text-text-secondary">工作目录（可选）</label>
+                  <input
+                    type="text"
+                    value={form.cwd}
+                    onChange={(e) => setForm({ ...form, cwd: e.target.value })}
+                    placeholder="D:/ai_agent/ai-devops-agent"
+                    className="w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent-primary"
+                  />
+                </div>
+              </div>
+            )}
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
               <Button
                 onClick={handleSubmit}
-                disabled={!form.name.trim() || !form.command.trim() || submitting}
+                disabled={
+                  formMode === 'sse'
+                    ? !sseForm.name.trim() || !sseForm.url.trim() || submitting
+                    : !form.name.trim() || !form.command.trim() || submitting
+                }
               >
                 {submitting ? '连接中...' : '连接'}
               </Button>
@@ -214,12 +285,12 @@ export default function MCP() {
                   ) : (
                     <Button
                       size="sm"
-                      onClick={() => s.type === 'stdio' ? undefined : connectMcp(s.name)}
+                      onClick={() => (s.type === 'stdio' || s.type === 'sse') ? undefined : connectMcp(s.name)}
                       className="flex-1"
-                      disabled={s.type === 'stdio'}
+                      disabled={s.type === 'stdio' || s.type === 'sse'}
                     >
                       <Link size={14} />
-                      {s.type === 'stdio' ? '需通过表单连接' : '连接'}
+                      {(s.type === 'stdio' || s.type === 'sse') ? '需通过表单连接' : '连接'}
                     </Button>
                   )}
                 </div>
@@ -241,7 +312,7 @@ export default function MCP() {
                 扩展工具能力而无需修改代码。支持三种类型：
               </p>
               <ul className="mt-2 space-y-1 text-sm text-text-secondary">
-                <li><strong className="text-text-primary">Mock 服务器</strong>：内置的演示服务器，用于学习测试</li>
+                <li><strong className="text-text-primary">Mock 服务器</strong>：内置的演示服务器，用于功能验证</li>
                 <li><strong className="text-text-primary">自定义服务器</strong>：通过 echo/http/shell handler 自定义工具</li>
                 <li><strong className="text-text-primary">标准 MCP 服务器</strong>：通过 JSON-RPC 协议连接真实的外部 MCP 进程</li>
               </ul>

@@ -14,6 +14,9 @@ from agent.mcp import (
     connect_stdio_mcp,
     disconnect_stdio_mcp,
     list_stdio_mcp_servers,
+    connect_sse_mcp,
+    disconnect_sse_mcp,
+    list_sse_mcp_servers,
 )
 
 router = APIRouter()
@@ -27,6 +30,7 @@ async def list_mcp():
         "available": list(MOCK_SERVERS.keys()),
         "custom": list_custom_servers(),
         "stdio_servers": list_stdio_mcp_servers(),
+        "sse_servers": list_sse_mcp_servers(),
     }
 
 
@@ -137,5 +141,43 @@ async def disconnect_stdio(payload: dict):
         return {"error": "name is required"}
     result = disconnect_stdio_mcp(name)
     if result.startswith("Standard MCP server"):
+        return {"error": result}
+    return {"result": result, "connected": list_connected_mcp()}
+
+
+# ============ 远程 MCP 服务器（SSE） ============
+
+@router.post("/sse/connect")
+async def connect_sse(payload: dict):
+    """通过 SSE 连接一个远程 MCP 服务器
+
+    请求体示例:
+    {
+        "name": "remote_mcp",
+        "url": "http://localhost:8080/sse"
+    }
+    """
+    name = payload.get("name", "").strip()
+    url = payload.get("url", "").strip()
+
+    if not name:
+        return {"error": "name is required"}
+    if not url:
+        return {"error": "url is required"}
+
+    result = connect_sse_mcp(name, url)
+    if result.startswith("Error"):
+        return {"error": result}
+    return {"result": result, "connected": list_connected_mcp()}
+
+
+@router.post("/sse/disconnect")
+async def disconnect_sse(payload: dict):
+    """断开远程 SSE MCP 服务器连接"""
+    name = payload.get("name", "")
+    if not name:
+        return {"error": "name is required"}
+    result = disconnect_sse_mcp(name)
+    if result.startswith("SSE MCP server"):
         return {"error": result}
     return {"result": result, "connected": list_connected_mcp()}

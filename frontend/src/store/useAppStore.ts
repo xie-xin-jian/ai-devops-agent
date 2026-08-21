@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Message, Task, CronJob, MCPServer, Tool, StdioMCPConfig, Skill, SkillDetail } from '../types'
+import type { Message, Task, CronJob, MCPServer, Tool, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail } from '../types'
 import { chatApi, taskApi, cronApi, mcpApi, systemApi, skillApi } from '../api'
 
 type View = 'chat' | 'tasks' | 'cron' | 'tools' | 'mcp' | 'skills'
@@ -13,6 +13,7 @@ interface AppState {
 
   messages: Message[]
   isLoading: boolean
+  sessionId: string
   sendMessage: (msg: string) => Promise<void>
   resetMessages: () => Promise<void>
 
@@ -34,6 +35,8 @@ interface AppState {
   disconnectMcp: (name: string) => Promise<void>
   connectStdioMcp: (config: StdioMCPConfig) => Promise<void>
   disconnectStdioMcp: (name: string) => Promise<void>
+  connectSseMcp: (config: SseMCPConfig) => Promise<void>
+  disconnectSseMcp: (name: string) => Promise<void>
 
   skills: Skill[]
   selectedSkill: SkillDetail | null
@@ -69,18 +72,22 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   messages: [],
   isLoading: false,
+  sessionId: localStorage.getItem('session_id') || '',
   sendMessage: async (msg: string) => {
     if (!msg.trim() || get().isLoading) return
     const userMsg: Message = { role: 'user', content: msg, timestamp: Date.now() }
     set((s) => ({ messages: [...s.messages, userMsg], isLoading: true }))
     try {
-      const res = await chatApi.send(msg)
+      const res = await chatApi.send(msg, get().sessionId)
+      if (res.session_id && res.session_id !== get().sessionId) {
+        localStorage.setItem('session_id', res.session_id)
+      }
       const aiMsg: Message = {
         role: 'assistant',
         content: res.response,
         timestamp: Date.now(),
       }
-      set((s) => ({ messages: [...s.messages, aiMsg], isLoading: false }))
+      set((s) => ({ messages: [...s.messages, aiMsg], isLoading: false, sessionId: res.session_id }))
     } catch (e: any) {
       set({ isLoading: false })
       get().showToast('error', e.message || '发送失败')
@@ -88,7 +95,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   resetMessages: async () => {
     try {
-      await systemApi.reset()
+      await systemApi.reset(get().sessionId)
       set({ messages: [] })
       get().showToast('success', '对话已重置')
     } catch (e: any) {
@@ -216,6 +223,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   disconnectStdioMcp: async (name) => {
     try {
       await mcpApi.disconnectStdio(name)
+      await get().fetchMcpServers()
+      await get().fetchTools()
+      get().showToast('success', `已断开 ${name}`)
+    } catch (e: any) {
+      get().showToast('error', e.message || '断开失败')
+    }
+  },
+  connectSseMcp: async (config) => {
+    try {
+      await mcpApi.connectSse(config)
+      await get().fetchMcpServers()
+      await get().fetchTools()
+      get().showToast('success', `已连接远程 MCP 服务器 ${config.name}`)
+    } catch (e: any) {
+      get().showToast('error', e.message || '连接失败')
+    }
+  },
+  disconnectSseMcp: async (name) => {
+    try {
+      await mcpApi.disconnectSse(name)
       await get().fetchMcpServers()
       await get().fetchTools()
       get().showToast('success', `已断开 ${name}`)
