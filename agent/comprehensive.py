@@ -63,6 +63,7 @@ from .mcp import (
     connect_mcp, disconnect_mcp, assemble_tool_pool, list_connected_mcp,
     is_mcp_tool, is_destructive_mcp_tool,
 )
+from .logger import logger
 
 
 class ComprehensiveAgent:
@@ -482,6 +483,7 @@ class ComprehensiveAgent:
         trigger_hooks("UserPromptSubmit", user_message)
         self._last_user_query = user_message
         self.messages.append({"role": "user", "content": user_message})
+        logger.info(f"[user] {user_message[:200]}")
 
         yield {"type": "status", "message": "准备中...", "turn": 0}
 
@@ -492,6 +494,7 @@ class ComprehensiveAgent:
                 "content": "\n\n".join(bg_notifications),
             })
             yield {"type": "status", "message": f"收到 {len(bg_notifications)} 条后台任务通知", "turn": 0}
+            logger.info(f"[bg] 收到 {len(bg_notifications)} 条后台任务通知")
 
         cron_jobs = consume_cron_queue()
         for job in cron_jobs:
@@ -500,6 +503,7 @@ class ComprehensiveAgent:
                 "content": f"<cron_job>\n<id>{job.id}</id>\n<schedule>{job.cron}</schedule>\n<prompt>{job.prompt}</prompt>\n</cron_job>",
             })
             yield {"type": "status", "message": f"Cron 任务触发: {job.id}", "turn": 0}
+            logger.info(f"[cron] 触发: {job.id} ({job.cron})")
 
         max_turns = 30
         final_text = ""
@@ -511,6 +515,7 @@ class ComprehensiveAgent:
 
             yield {"type": "thinking", "turn": turn+1}
             yield {"type": "status", "message": f"第 {turn+1} 轮：调用大模型 ({self.model})", "turn": turn+1}
+            logger.info(f"[turn {turn+1}] 调用 {self.recovery.current_model} (ctx {estimate_size(self.messages)} bytes)")
 
             try:
                 response = self._call_api(self.messages)
@@ -519,14 +524,17 @@ class ComprehensiveAgent:
                     if not self.recovery.has_attempted_reactive_compact:
                         self.recovery.has_attempted_reactive_compact = True
                         yield {"type": "status", "message": "Prompt 过长，执行反应式压缩...", "turn": turn+1}
+                        logger.warning(f"[turn {turn+1}] Prompt 过长，执行 reactive_compact")
                         self.messages = reactive_compact(
                             self.messages, self.client, self.recovery.current_model
                         )
                         continue
                     if escalate_tokens(self.recovery):
                         yield {"type": "status", "message": f"Token 扩容到 {self.recovery.current_max_tokens}", "turn": turn+1}
+                        logger.warning(f"[turn {turn+1}] Token 扩容到 {self.recovery.current_max_tokens}")
                         continue
                 yield {"type": "error", "message": str(e)}
+                logger.error(f"[turn {turn+1}] API 异常: {e}")
                 raise
 
             self.messages.append({"role": "assistant", "content": response.content})
@@ -539,6 +547,7 @@ class ComprehensiveAgent:
             if not has_tool_use(response.content):
                 # LLM 认为不需要调工具了，输出最终文字
                 final_text = extract_text(response.content)
+                logger.info(f"[turn {turn+1}] 完成: {len(final_text or '')} 字符")
                 if final_text:
                     # 逐字流式输出最终文字（前端能看到逐字出现）
                     for word in final_text.split(" "):
@@ -551,6 +560,7 @@ class ComprehensiveAgent:
                 if block.type != "tool_use":
                     continue
 
+                logger.info(f"[turn {turn+1}] tool_use: {block.name}")
                 yield {
                     "type": "tool_use",
                     "tool": block.name,
@@ -563,7 +573,9 @@ class ComprehensiveAgent:
                     output = self._handle_tool_call(block)
                 except Exception as tool_err:
                     output = f"Error: {tool_err}"
+                    logger.error(f"[turn {turn+1}] tool {block.name} 异常: {tool_err}")
                 duration_ms = int((time.time() - t0) * 1000)
+                logger.info(f"[turn {turn+1}] tool_done: {block.name} ({duration_ms}ms)")
 
                 output_str = str(output)
                 # 截断太长的输出
@@ -597,6 +609,7 @@ class ComprehensiveAgent:
                         break
 
         yield {"type": "done", "text": final_text, "total_turns": turn + 1}
+        logger.info(f"[done] 共 {turn + 1} 轮, 输出 {len(final_text)} 字符")
 
     def get_messages(self) -> list:
         return list(self.messages)
