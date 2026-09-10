@@ -23,12 +23,69 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 // 对话
+export interface StreamEvent {
+  type: 'status' | 'tool_use' | 'tool_result' | 'thinking' | 'text_delta' | 'done' | 'error'
+  message?: string
+  turn?: number
+  tool?: string
+  input?: Record<string, any>
+  output?: string
+  duration_ms?: number
+  delta?: string
+  text?: string
+  total_turns?: number
+}
+
 export const chatApi = {
   send: (message: string, sessionId?: string) =>
     request<{ response: string; session_id: string }>('/api/chat/', {
       method: 'POST',
       body: JSON.stringify({ message, session_id: sessionId }),
     }),
+
+  // SSE 流式对话
+  stream: (
+    message: string,
+    sessionId: string | undefined,
+    onEvent: (event: StreamEvent) => void,
+    signal?: AbortSignal
+  ): Promise<void> => {
+    return fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, session_id: sessionId }),
+      signal,
+    }).then(async (res) => {
+      if (!res.ok || !res.body) {
+        throw new Error(`Stream请求失败: ${res.status}`)
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        // SSE 事件分隔符: \n\n
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() || ''
+        for (const part of parts) {
+          const lines = part.split('\n')
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (trimmed.startsWith('data:')) {
+              const data = trimmed.slice(5).trim()
+              if (data && data !== '[DONE]') {
+                try {
+                  onEvent(JSON.parse(data))
+                } catch { /* 忽略无效 JSON */ }
+              }
+            }
+          }
+        }
+      }
+    })
+  },
 }
 
 // 任务 - 后端返回 {tasks: [...]} 或数组，字段已补全

@@ -1,8 +1,18 @@
 import { create } from 'zustand'
 import type { Message, Task, CronJob, MCPServer, Tool, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail } from '../types'
+import type { StreamEvent } from '../api'
 import { chatApi, taskApi, cronApi, mcpApi, systemApi, skillApi } from '../api'
 
 type View = 'chat' | 'tasks' | 'cron' | 'tools' | 'mcp' | 'skills'
+
+export interface ToolCallRecord {
+  turn: number
+  tool: string
+  input?: Record<string, any>
+  output?: string
+  duration_ms?: number
+  status: 'pending' | 'running' | 'done' | 'error'
+}
 
 interface AppState {
   view: View
@@ -16,6 +26,15 @@ interface AppState {
   sessionId: string
   sendMessage: (msg: string) => Promise<void>
   resetMessages: () => Promise<void>
+
+  // 流式状态（用于执行轨迹面板）
+  isStreaming: boolean
+  currentTurn: number
+  toolHistory: ToolCallRecord[]
+  liveText: string            // 正在流式输出的文字
+  currentStatus: string       // Agent 当前状态（"正在调大模型"等）
+  streamAbortController: AbortController | null
+  stopStreaming: () => void
 
   tasks: Task[]
   fetchTasks: () => Promise<void>
@@ -73,25 +92,97 @@ export const useAppStore = create<AppState>((set, get) => ({
   messages: [],
   isLoading: false,
   sessionId: localStorage.getItem('session_id') || '',
+  isStreaming: false,
+  currentTurn: 0,
+  toolHistory: [],
+  liveText: '',
+  currentStatus: '',
+  streamAbortController: null,
+
   sendMessage: async (msg: string) => {
-    if (!msg.trim() || get().isLoading) return
+    if (!msg.trim() || get().isStreaming) return
     const userMsg: Message = { role: 'user', content: msg, timestamp: Date.now() }
-    set((s) => ({ messages: [...s.messages, userMsg], isLoading: true }))
+    set((s) => ({
+      messages: [...s.messages, userMsg],
+      isStreaming: true,
+      isLoading: true,
+      toolHistory: [],
+      liveText: '',
+      currentStatus: '准备中...',
+      currentTurn: 0,
+    }))
+
+    const controller = new AbortController()
+    set({ streamAbortController: controller })
+
     try {
-      const res = await chatApi.send(msg, get().sessionId)
-      if (res.session_id && res.session_id !== get().sessionId) {
-        localStorage.setItem('session_id', res.session_id)
-      }
-      const aiMsg: Message = {
-        role: 'assistant',
-        content: res.response,
-        timestamp: Date.now(),
-      }
-      set((s) => ({ messages: [...s.messages, aiMsg], isLoading: false, sessionId: res.session_id }))
+      await chatApi.stream(msg, get().sessionId, (event: StreamEvent) => {
+        switch (event.type) {
+          case 'status':
+            set({ currentStatus: event.message || '', currentTurn: event.turn || 0 })
+            break
+          case 'thinking':
+            set({ currentStatus: `第 ${event.turn} 轮：思考中...` })
+            break
+          case 'tool_use':
+            set((s) => ({
+              toolHistory: [...s.toolHistory, {
+                turn: event.turn!,
+                tool: event.tool!,
+                input: event.input,
+                status: 'running',
+              }],
+              currentStatus: `正在调用 ${event.tool}`,
+            }))
+            break
+          case 'tool_result':
+            set((s) => ({
+              toolHistory: s.toolHistory.map((t) =>
+                t.turn === event.turn && t.tool === event.tool
+                  ? { ...t, output: event.output, duration_ms: event.duration_ms, status: 'done' }
+                  : t
+              ),
+              currentStatus: `${event.tool} 完成 (${event.duration_ms}ms)`,
+            }))
+            break
+          case 'text_delta':
+            set((s) => ({ liveText: s.liveText + event.delta }))
+            break
+          case 'error':
+            set({ currentStatus: `错误: ${event.message}` })
+            break
+          case 'done':
+            set((s) => {
+              const aiMsg: Message = {
+                role: 'assistant',
+                content: event.text || s.liveText,
+                timestamp: Date.now(),
+              }
+              return {
+                messages: [...s.messages, aiMsg],
+                liveText: '',
+                isStreaming: false,
+                isLoading: false,
+                currentStatus: `完成，共 ${event.total_turns} 轮`,
+              }
+            })
+            break
+        }
+      }, controller.signal)
     } catch (e: any) {
-      set({ isLoading: false })
-      get().showToast('error', e.message || '发送失败')
+      if (e?.name !== 'AbortError') {
+        set({ isStreaming: false, isLoading: false, currentStatus: '请求失败' })
+        get().showToast('error', e.message || '发送失败')
+      }
+    } finally {
+      set({ streamAbortController: null })
     }
+  },
+
+  stopStreaming: () => {
+    const ctrl = get().streamAbortController
+    if (ctrl) ctrl.abort()
+    set({ isStreaming: false, isLoading: false, currentStatus: '已停止' })
   },
   resetMessages: async () => {
     try {

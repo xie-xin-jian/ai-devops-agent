@@ -8,9 +8,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import json
 from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from agent.comprehensive import ComprehensiveAgent
 from agent.config import WORKDIR, ALLOWED_ORIGINS
@@ -108,6 +110,37 @@ async def chat(payload: dict):
     # run 是同步阻塞调用，用 threadpool 避免阻塞 event loop
     response = await run_in_threadpool(agent.run, message)
     return {"response": response, "session_id": sid}
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(payload: dict):
+    """SSE 流式对话接口。每 yield 一个事件就推送给前端。"""
+    session_id = payload.get("session_id")
+    message = payload.get("message", "")
+    reset = payload.get("reset", False)
+    if not message:
+        return {"error": "message is required"}
+    sid, agent = get_or_create_session(session_id)
+    if reset:
+        agent.reset()
+
+    def event_generator():
+        # run_stream 是同步 generator（用了 time.sleep 在 agent 内部）
+        # StreamingResponse 会在独立线程里跑这个生成器
+        for event in agent.run_stream(message):
+            # SSE 格式：data: {...}\n\n
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "session-id": sid,
+        },
+    )
 
 
 @app.get("/api/messages/")
