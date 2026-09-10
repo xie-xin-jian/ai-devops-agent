@@ -459,14 +459,31 @@ class ComprehensiveAgent:
         return output
 
     def run(self, user_message: str) -> str:
-        """同步执行 Agent 循环。
+        """同步执行 Agent 循环（非流式，保持原有行为不变）。"""
+        final_text = None
+        for event in self.run_stream(user_message):
+            if event["type"] == "done":
+                final_text = event["text"]
+            elif event["type"] == "error":
+                raise RuntimeError(event["message"])
+        return final_text or ""
 
-        内部使用同步 Anthropic client，API 层应通过 run_in_threadpool 调用
-        以避免阻塞 event loop。
+    def run_stream(self, user_message: str):
+        """流式执行 Agent 循环，每步 yield 一个事件 dict。
+
+        事件类型：
+          {"type": "status", "message": str, "turn": int}
+          {"type": "tool_use", "tool": str, "input": dict, "turn": int}
+          {"type": "tool_result", "tool": str, "output": str, "turn": int, "duration_ms": int}
+          {"type": "thinking", "turn": int}
+          {"type": "done", "text": str, "total_turns": int}
+          {"type": "error", "message": str}
         """
         trigger_hooks("UserPromptSubmit", user_message)
         self._last_user_query = user_message
         self.messages.append({"role": "user", "content": user_message})
+
+        yield {"type": "status", "message": "准备中...", "turn": 0}
 
         bg_notifications = collect_background_results()
         if bg_notifications:
@@ -474,6 +491,7 @@ class ComprehensiveAgent:
                 "role": "user",
                 "content": "\n\n".join(bg_notifications),
             })
+            yield {"type": "status", "message": f"收到 {len(bg_notifications)} 条后台任务通知", "turn": 0}
 
         cron_jobs = consume_cron_queue()
         for job in cron_jobs:
@@ -481,10 +499,18 @@ class ComprehensiveAgent:
                 "role": "user",
                 "content": f"<cron_job>\n<id>{job.id}</id>\n<schedule>{job.cron}</schedule>\n<prompt>{job.prompt}</prompt>\n</cron_job>",
             })
+            yield {"type": "status", "message": f"Cron 任务触发: {job.id}", "turn": 0}
 
         max_turns = 30
+        final_text = ""
+        last_assistant_text = ""
+
         for turn in range(max_turns):
+            yield {"type": "status", "message": f"第 {turn+1} 轮：压缩上下文", "turn": turn+1}
             self.messages = self._compact_if_needed(self.messages)
+
+            yield {"type": "thinking", "turn": turn+1}
+            yield {"type": "status", "message": f"第 {turn+1} 轮：调用大模型 ({self.model})", "turn": turn+1}
 
             try:
                 response = self._call_api(self.messages)
@@ -492,24 +518,66 @@ class ComprehensiveAgent:
                 if is_prompt_too_long_error(e):
                     if not self.recovery.has_attempted_reactive_compact:
                         self.recovery.has_attempted_reactive_compact = True
+                        yield {"type": "status", "message": "Prompt 过长，执行反应式压缩...", "turn": turn+1}
                         self.messages = reactive_compact(
                             self.messages, self.client, self.recovery.current_model
                         )
                         continue
                     if escalate_tokens(self.recovery):
+                        yield {"type": "status", "message": f"Token 扩容到 {self.recovery.current_max_tokens}", "turn": turn+1}
                         continue
+                yield {"type": "error", "message": str(e)}
                 raise
 
             self.messages.append({"role": "assistant", "content": response.content})
 
+            # 收集这段文字回复（如果有）
+            for block in response.content:
+                if block.type == "text":
+                    last_assistant_text = block.text
+
             if not has_tool_use(response.content):
+                # LLM 认为不需要调工具了，输出最终文字
+                final_text = extract_text(response.content)
+                if final_text:
+                    # 逐字流式输出最终文字（前端能看到逐字出现）
+                    for word in final_text.split(" "):
+                        yield {"type": "text_delta", "delta": word + " "}
                 break
 
+            # 执行所有工具调用
             results = []
             for block in response.content:
                 if block.type != "tool_use":
                     continue
-                output = self._handle_tool_call(block)
+
+                yield {
+                    "type": "tool_use",
+                    "tool": block.name,
+                    "input": block.input if isinstance(block.input, dict) else {"input": str(block.input)},
+                    "turn": turn+1,
+                }
+
+                t0 = time.time()
+                try:
+                    output = self._handle_tool_call(block)
+                except Exception as tool_err:
+                    output = f"Error: {tool_err}"
+                duration_ms = int((time.time() - t0) * 1000)
+
+                output_str = str(output)
+                # 截断太长的输出
+                if len(output_str) > 2000:
+                    output_str = output_str[:2000] + "\n... (truncated)"
+
+                yield {
+                    "type": "tool_result",
+                    "tool": block.name,
+                    "output": output_str,
+                    "turn": turn+1,
+                    "duration_ms": duration_ms,
+                }
+
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
@@ -520,14 +588,15 @@ class ComprehensiveAgent:
 
         trigger_hooks("Stop", self.messages)
 
-        final_text = ""
-        for msg in reversed(self.messages):
-            if msg["role"] == "assistant":
-                final_text = extract_text(msg["content"])
-                if final_text:
-                    break
+        # 如果循环结束但没拿到 final_text，从后往前找
+        if not final_text:
+            for msg in reversed(self.messages):
+                if msg["role"] == "assistant":
+                    final_text = extract_text(msg["content"])
+                    if final_text:
+                        break
 
-        return final_text
+        yield {"type": "done", "text": final_text, "total_turns": turn + 1}
 
     def get_messages(self) -> list:
         return list(self.messages)
