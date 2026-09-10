@@ -210,8 +210,8 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-# 持久化路径
-CUSTOM_MCP_PATH = Path(__file__).parent.parent / ".mcp_servers.json"
+# 持久化走 SQLite（见 agent/db.py 的 mcp_servers 表）
+from agent.db import mcp_server_save, mcp_server_load_all, mcp_server_delete
 
 
 def _make_echo_handler(tool_name: str):
@@ -284,19 +284,23 @@ def _build_handler(tool_def: dict):
 
 
 def _load_custom_servers() -> dict:
-    """从磁盘加载自定义服务器配置。"""
-    if not CUSTOM_MCP_PATH.exists():
-        return {}
+    """从 SQLite 加载所有自定义服务器配置。"""
     try:
-        return json.loads(CUSTOM_MCP_PATH.read_text(encoding="utf-8"))
+        servers = {}
+        for row in mcp_server_load_all():
+            servers[row["name"]] = json.loads(row["config_json"])
+        return servers
     except Exception:
         return {}
 
 
 def _save_custom_servers(servers: dict) -> None:
-    """保存自定义服务器配置到磁盘。"""
-    CUSTOM_MCP_PATH.write_text(
-        json.dumps(servers, indent=2, ensure_ascii=False), encoding="utf-8")
+    """把所有自定义服务器配置写入 SQLite（全量覆盖）。"""
+    try:
+        for name, config in servers.items():
+            mcp_server_save(name, json.dumps(config, ensure_ascii=False))
+    except Exception:
+        pass
 
 
 def _instantiate_custom_server(name: str, config: dict) -> MCPClient:

@@ -2,10 +2,9 @@ import json
 import time
 import random
 from dataclasses import dataclass, asdict
-from pathlib import Path
-from agent.config import TASKS_DIR
-
-TASKS_DIR.mkdir(exist_ok=True)
+from agent.db import (
+    task_create, task_save, task_load, task_list,
+)
 
 
 @dataclass
@@ -18,8 +17,16 @@ class Task:
     blockedBy: list[str]
 
 
-def _task_path(task_id: str) -> Path:
-    return TASKS_DIR / f"{task_id}.json"
+def _row_to_task(row) -> Task:
+    """把 SQLite Row 转成 Task dataclass。"""
+    return Task(
+        id=row["id"],
+        subject=row["subject"],
+        description=row["description"] or "",
+        status=row["status"],
+        owner=row["owner"],
+        blockedBy=json.loads(row["blocked_by"]),
+    )
 
 
 def create_task(subject: str, description: str = "",
@@ -30,21 +37,25 @@ def create_task(subject: str, description: str = "",
         status="pending", owner=None,
         blockedBy=blockedBy or [],
     )
-    save_task(task)
+    task_create(task.id, task.subject, task.description,
+                task.status, task.owner, json.dumps(task.blockedBy))
     return task
 
 
 def save_task(task: Task):
-    _task_path(task.id).write_text(json.dumps(asdict(task), indent=2))
+    task_save(task.id, task.subject, task.description,
+              task.status, task.owner, json.dumps(task.blockedBy))
 
 
 def load_task(task_id: str) -> Task:
-    return Task(**json.loads(_task_path(task_id).read_text()))
+    row = task_load(task_id)
+    if row is None:
+        raise FileNotFoundError(f"Task {task_id} not found")
+    return _row_to_task(row)
 
 
 def list_tasks() -> list[Task]:
-    return [Task(**json.loads(p.read_text()))
-            for p in sorted(TASKS_DIR.glob("task_*.json"))]
+    return [_row_to_task(r) for r in task_list()]
 
 
 def get_task_json(task_id: str) -> str:
@@ -52,11 +63,13 @@ def get_task_json(task_id: str) -> str:
 
 
 def can_start(task_id: str) -> bool:
-    task = load_task(task_id)
-    for dep_id in task.blockedBy:
-        if not _task_path(dep_id).exists():
-            return False
-        if load_task(dep_id).status != "completed":
+    row = task_load(task_id)
+    if row is None:
+        return False
+    blocked_by = json.loads(row["blocked_by"])
+    for dep_id in blocked_by:
+        dep = task_load(dep_id)
+        if dep is None or dep["status"] != "completed":
             return False
     return True
 
@@ -68,9 +81,10 @@ def claim_task(task_id: str, owner: str = "agent") -> str:
     if task.owner:
         return f"Task {task_id} already owned by {task.owner}"
     if not can_start(task_id):
-        deps = [d for d in task.blockedBy
-                if _task_path(d).exists() and load_task(d).status != "completed"]
-        missing = [d for d in task.blockedBy if not _task_path(d).exists()]
+        blocked_by = json.loads(task_load(task_id)["blocked_by"])
+        deps = [d for d in blocked_by
+                if task_load(d) and task_load(d)["status"] != "completed"]
+        missing = [d for d in blocked_by if task_load(d) is None]
         parts = []
         if deps: parts.append(f"blocked by: {deps}")
         if missing: parts.append(f"missing deps: {missing}")

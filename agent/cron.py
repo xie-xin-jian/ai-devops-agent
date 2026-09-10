@@ -6,7 +6,11 @@ from pathlib import Path
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta
 from typing import Optional
-from agent.config import DURABLE_CRON_PATH, WORKDIR
+from agent.config import WORKDIR
+from agent.db import (
+    cron_job_save, cron_job_load_all, cron_job_delete,
+    cron_log_insert, cron_log_list,
+)
 
 
 @dataclass
@@ -147,25 +151,24 @@ def validate_cron(cron_expr: str) -> bool:
 
 
 def save_durable_jobs():
-    durable = {jid: job for jid, job in scheduled_jobs.items() if job.durable}
-    data = {jid: asdict(job) for jid, job in durable.items()}
-    try:
-        DURABLE_CRON_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(DURABLE_CRON_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    """把所有 durable cron 任务的当前状态写入 SQLite。"""
+    for jid, job in scheduled_jobs.items():
+        if job.durable:
+            try:
+                cron_job_save(job.id, job.cron, job.prompt, job.recurring, job.durable)
+            except Exception:
+                pass
 
 
 def load_durable_jobs():
+    """从 SQLite 恢复 durable cron 任务。"""
     try:
-        if not DURABLE_CRON_PATH.exists():
-            return
-        with open(DURABLE_CRON_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        for jid, job_data in data.items():
-            job = CronJob(**job_data)
-            scheduled_jobs[jid] = job
+        for row in cron_job_load_all():
+            job = CronJob(
+                id=row["id"], cron=row["cron"], prompt=row["prompt"],
+                recurring=bool(row["recurring"]), durable=bool(row["durable"]),
+            )
+            scheduled_jobs[job.id] = job
     except Exception:
         pass
 
@@ -201,6 +204,10 @@ def cancel_job(job_id: str) -> str:
             return f"Job {job_id} not found"
 
     save_durable_jobs()
+    try:
+        cron_job_delete(job_id)
+    except Exception:
+        pass
     return f"Job {job_id} cancelled"
 
 
@@ -220,23 +227,14 @@ def _get_bg_agent():
 
 
 def _save_cron_run_log(job: CronJob, fired_at: datetime, output: str, error: Optional[str] = None):
-    """把 Cron 执行结果落盘，方便用户之后查历史。"""
+    """把 Cron 执行结果写入 SQLite，方便用户之后查历史。"""
     try:
-        CRON_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        ts = fired_at.strftime("%Y%m%d_%H%M%S")
-        log_path = CRON_LOG_DIR / f"{job.id}__{ts}.json"
-        log = {
-            "job_id": job.id,
-            "cron": job.cron,
-            "prompt": job.prompt,
-            "fired_at": fired_at.isoformat(timespec="seconds"),
-            "finished_at": datetime.now().isoformat(timespec="seconds"),
-            "success": error is None,
-            "output": output,
-            "error": error,
-        }
-        with open(log_path, "w", encoding="utf-8") as f:
-            json.dump(log, f, ensure_ascii=False, indent=2)
+        cron_log_insert(
+            job_id=job.id, cron=job.cron,
+            fired_at=fired_at.isoformat(timespec="seconds"),
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+            success=error is None, output=output, error=error,
+        )
     except Exception:
         pass
 
@@ -304,19 +302,18 @@ def consume_cron_queue() -> list[CronJob]:
 def list_cron_run_logs(job_id: Optional[str] = None, limit: int = 20) -> list[dict]:
     """查看 Cron 执行历史。不传 job_id 则查所有。"""
     try:
-        if not CRON_LOG_DIR.exists():
-            return []
-        files = sorted(CRON_LOG_DIR.glob("*.json"), reverse=True)
-        result = []
-        for p in files[:limit]:
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    log = json.load(f)
-                if job_id and log.get("job_id") != job_id:
-                    continue
-                result.append(log)
-            except Exception:
-                pass
-        return result
+        rows = cron_log_list(job_id=job_id, limit=limit)
+        return [
+            {
+                "job_id": r["job_id"],
+                "cron": r["cron"],
+                "fired_at": r["fired_at"],
+                "finished_at": r["finished_at"],
+                "success": bool(r["success"]),
+                "output": r["output"],
+                "error": r["error"],
+            }
+            for r in rows
+        ]
     except Exception:
         return []
