@@ -103,13 +103,9 @@ async def health():
 @app.get("/tools")
 async def list_tools():
     """列出所有可用工具（内置 + Agent 注册 + MCP），不依赖 session。"""
-    from agent.tools import ALL_TOOL_SCHEMAS
     from agent.mcp import get_mcp_tool_names
-    builtin = [t["name"] for t in ALL_TOOL_SCHEMAS]
-    extra = ["todo_write", "create_task", "list_tasks", "get_task", "claim_task",
-             "complete_task", "list_skills", "load_skill", "spawn_subagent",
-             "compact", "schedule_cron", "list_crons", "cancel_cron", "connect_mcp"]
-    return {"tools": builtin + extra + get_mcp_tool_names()}
+    builtin = [tool["name"] for tool in ComprehensiveAgent.get_tool_catalog()]
+    return {"tools": builtin + get_mcp_tool_names()}
 
 
 @app.post("/api/chat/")

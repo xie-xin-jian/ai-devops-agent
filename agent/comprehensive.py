@@ -70,6 +70,15 @@ from .logger import logger
 class ComprehensiveAgent:
     """综合 Agent —— 所有 harness 机制在一个 loop 里。"""
 
+    @classmethod
+    def get_tool_catalog(cls) -> list[dict]:
+        """Build the complete tool schema list without requiring an API key."""
+        catalog = object.__new__(cls)
+        catalog.tools = []
+        catalog.handlers = {}
+        catalog._register_default_tools()
+        return list(catalog.tools)
+
     def __init__(self, system_prompt: str = None, enable_cron: bool = False, api_key: str = None):
         base_url = ANTHROPIC_BASE_URL if ANTHROPIC_BASE_URL else None
         key = api_key or API_KEY
