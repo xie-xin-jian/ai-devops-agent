@@ -13,6 +13,7 @@ _memory_lock = threading.RLock()
 class MemorySystem:
     def __init__(self):
         self.memories: list[dict] = []
+        self._file_state: tuple[int, int] | None = None
         self._load()
 
     def _path(self) -> Path:
@@ -21,12 +22,16 @@ class MemorySystem:
     def _load(self):
         path = self._path()
         if not path.exists():
+            self.memories = []
+            self._file_state = None
             return
+        stat = path.stat()
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
                     self.memories.append(json.loads(line))
+        self._file_state = (stat.st_mtime_ns, stat.st_size)
 
     def _save(self):
         path = self._path()
@@ -35,15 +40,25 @@ class MemorySystem:
             for m in self.memories
         )
         atomic_write_text(path, content)
+        stat = path.stat()
+        self._file_state = (stat.st_mtime_ns, stat.st_size)
 
-    def _reload(self):
-        self.memories = []
-        self._load()
+    def _reload_if_changed(self):
+        path = self._path()
+        if not path.exists():
+            self.memories = []
+            self._file_state = None
+            return
+        stat = path.stat()
+        current_state = (stat.st_mtime_ns, stat.st_size)
+        if current_state != self._file_state:
+            self.memories = []
+            self._load()
 
     def add(self, content: str, importance: int = 3, category: str = "general"):
         """添加一条记忆。importance: 1-5，数字越重要。"""
         with _memory_lock:
-            self._reload()
+            self._reload_if_changed()
             mem = {
                 "id": f"mem_{int(time.time())}_{len(self.memories):04d}",
                 "content": content,
@@ -59,7 +74,7 @@ class MemorySystem:
     def select(self, query: str, top_k: int = 5) -> list[dict]:
         """第一层：选择 - 根据关键词匹配和重要性筛选相关记忆。"""
         with _memory_lock:
-            self._reload()
+            self._reload_if_changed()
             query_lower = query.lower()
             scored = []
             for mem in self.memories:
@@ -76,7 +91,6 @@ class MemorySystem:
             result = [mem for _, mem in scored[:top_k]]
             for mem in result:
                 mem["access_count"] = mem.get("access_count", 0) + 1
-            self._save()
             return result
 
     def extract(self, memories: list[dict]) -> str:
@@ -91,7 +105,7 @@ class MemorySystem:
     def consolidate(self) -> str:
         """第三层：整合 - 定期整合旧记忆，压缩为摘要。"""
         with _memory_lock:
-            self._reload()
+            self._reload_if_changed()
             if len(self.memories) < 10:
                 return "Not enough memories to consolidate"
             old_memories = sorted(self.memories, key=lambda m: m["created_at"])[:5]
