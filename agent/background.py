@@ -91,8 +91,8 @@ def collect_background_results() -> list[str]:
     return notifications
 
 
-def list_background_tasks() -> str:
-    """列出所有后台任务状态及完整输出（不消费，可重复查询）。"""
+def list_background_tasks(full: bool = False) -> str:
+    """列出后台任务；默认返回摘要，full=True 时返回完整捕获输出。"""
     with background_lock:
         items = list(background_tasks.items())
     if not items:
@@ -101,7 +101,8 @@ def list_background_tasks() -> str:
     for bg_id, task in items:
         status = task.get("status", "unknown")
         output = background_results.get(bg_id, "")
-        output = _truncate_output(output, head=10, tail=20)
+        if not full:
+            output = _truncate_output(output, head=10, tail=20)
         cmd = task.get("command", "")[:120]
         lines.append(f"[{bg_id}] status={status}")
         lines.append(f"  command: {cmd}")

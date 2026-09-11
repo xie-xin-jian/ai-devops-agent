@@ -442,15 +442,28 @@ class ComprehensiveAgent:
         schema = {
             "name": "list_background_tasks",
             "description": (
-                "List all background tasks with their current status (running/completed) "
-                "and FULL output. Does NOT consume/modify them — safe to call repeatedly. "
+                "List all background tasks with their current status (running/completed). "
+                "By default output is summarized; set full=true for complete captured output. "
+                "Does NOT consume/modify them — safe to call repeatedly. "
                 "Use this to check whether a background task finished and read its result. "
                 "Prefer this over collect_background_results when you need to re-check a task."
             ),
-            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "full": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return complete captured output instead of a head/tail summary.",
+                    },
+                },
+                "required": [],
+            },
         }
         self.tools.append(schema)
-        self.handlers["list_background_tasks"] = lambda: list_background_tasks()
+        self.handlers["list_background_tasks"] = (
+            lambda full=False: list_background_tasks(full=full)
+        )
 
     def _build_system_prompt(self) -> str:
         tool_names = [t["name"] for t in self.tools]
