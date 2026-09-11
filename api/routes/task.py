@@ -1,9 +1,10 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from dataclasses import asdict
 
+from api.schemas import TaskClaimRequest, TaskCompleteRequest, TaskCreateRequest
 from agent.task_system import (
     Task, create_task, list_tasks, load_task, claim_task, complete_task,
-    TASKS_DIR, VALID_PRIORITIES,
+    TASKS_DIR,
 )
 
 router = APIRouter()
@@ -24,16 +25,13 @@ async def list_all_tasks():
 
 
 @router.post("/")
-async def create_new_task(payload: dict):
-    subject = payload.get("subject", "")
-    description = payload.get("description", "")
-    blockedBy = payload.get("blockedBy", None)
-    priority = payload.get("priority", "medium")
-    if not subject:
-        return {"error": "subject is required"}
-    if priority not in VALID_PRIORITIES:
-        return {"error": "priority must be one of: low, medium, high"}
-    task = create_task(subject, description, blockedBy, priority)
+async def create_new_task(payload: TaskCreateRequest):
+    task = create_task(
+        payload.subject,
+        payload.description,
+        payload.blockedBy,
+        payload.priority,
+    )
     return _task_dict(task)
 
 
@@ -42,27 +40,35 @@ async def get_task(task_id: str):
     try:
         return _task_dict(load_task(task_id))
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.post("/{task_id}/claim")
-async def claim(task_id: str, payload: dict = None):
-    owner = (payload or {}).get("owner", "agent")
-    result = claim_task(task_id, owner)
+async def claim(task_id: str, payload: TaskClaimRequest | None = None):
+    owner = payload.owner if payload else "agent"
     try:
+        result = claim_task(task_id, owner)
+        if not result.startswith("Claimed"):
+            raise HTTPException(status_code=409, detail=result)
         return _task_dict(load_task(task_id))
-    except Exception:
-        return {"result": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.post("/{task_id}/complete")
-async def complete(task_id: str, payload: dict = None):
-    result_text = (payload or {}).get("result", "")
-    msg = complete_task(task_id, result_text)
+async def complete(task_id: str, payload: TaskCompleteRequest | None = None):
+    result_text = payload.result if payload else ""
     try:
+        msg = complete_task(task_id, result_text)
+        if not msg.startswith("Completed"):
+            raise HTTPException(status_code=409, detail=msg)
         return _task_dict(load_task(task_id))
-    except Exception:
-        return {"result": msg}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.delete("/{task_id}")
@@ -70,9 +76,9 @@ async def delete_task(task_id: str):
     """删除任务（直接删 JSON 文件）。"""
     path = TASKS_DIR / f"{task_id}.json"
     if not path.exists():
-        return {"error": f"task {task_id} not found"}
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     try:
         path.unlink()
         return {"success": True, "deleted": task_id}
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e)) from e

@@ -1,8 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from agent.cron import (
     schedule_job, cancel_job, scheduled_jobs, validate_cron,
     list_cron_run_logs, _last_fired,
 )
+from api.schemas import CronCreateRequest
 
 router = APIRouter()
 
@@ -41,24 +42,16 @@ async def get_cron_logs(job_id: str = None, limit: int = 20):
 
 
 @router.post("/")
-async def create_cron_job(payload: dict):
-    cron = payload.get("cron", "")
-    prompt = payload.get("prompt", "")
-    recurring = payload.get("recurring", True)
-    name = payload.get("name", "")
-    description = payload.get("description", "")
-    enabled = payload.get("enabled", True)
-    if not cron or not prompt:
-        return {"error": "cron and prompt are required"}
-    if not validate_cron(cron):
-        return {"error": "Invalid cron expression"}
+async def create_cron_job(payload: CronCreateRequest):
+    if not validate_cron(payload.cron):
+        raise HTTPException(status_code=400, detail="Invalid cron expression")
     job, msg = schedule_job(
-        cron,
-        prompt,
-        recurring,
-        name=name,
-        description=description,
-        enabled=enabled,
+        payload.cron,
+        payload.prompt,
+        payload.recurring,
+        name=payload.name,
+        description=payload.description,
+        enabled=payload.enabled,
     )
     if job is not None:
         return {
@@ -71,10 +64,12 @@ async def create_cron_job(payload: dict):
             "enabled": job.enabled,
             "created_at": job.created_at,
         }
-    return {"error": msg}
+    raise HTTPException(status_code=400, detail=msg)
 
 
 @router.delete("/{job_id}")
 async def delete_cron_job(job_id: str):
     result = cancel_job(job_id)
+    if result.startswith("Job ") and result.endswith("not found"):
+        raise HTTPException(status_code=404, detail=result)
     return {"result": result}

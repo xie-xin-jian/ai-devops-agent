@@ -1,6 +1,12 @@
 """MCP 管理 API 路由"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from api.schemas import (
+    MCPCustomServerRequest,
+    MCPNameRequest,
+    MCPSseConnectRequest,
+    MCPStdioConnectRequest,
+)
 from agent.mcp import (
     connect_mcp,
     disconnect_mcp,
@@ -35,22 +41,24 @@ async def list_mcp():
 
 
 @router.post("/connect")
-async def connect(payload: dict):
+async def connect(payload: MCPNameRequest):
     """连接一个内置 MCP 服务器（mock）"""
-    name = payload.get("name", "")
+    name = payload.name.strip()
     if not name:
-        return {"error": "name is required"}
+        raise HTTPException(status_code=422, detail="name is required")
     result = connect_mcp(name)
+    if result.startswith("Unknown"):
+        raise HTTPException(status_code=404, detail=result)
     return {"result": result, "connected": list_connected_mcp()}
 
 
 @router.post("/disconnect")
-async def disconnect(payload: dict):
+async def disconnect(payload: MCPNameRequest):
     """断开一个 MCP 服务器"""
-    name = payload.get("name", "")
-    if not name:
-        return {"error": "name is required"}
+    name = payload.name.strip()
     result = disconnect_mcp(name)
+    if result.endswith("not connected"):
+        raise HTTPException(status_code=404, detail=result)
     return {"result": result, "connected": list_connected_mcp()}
 
 
@@ -72,18 +80,14 @@ async def list_custom():
 
 
 @router.post("/custom")
-async def create_custom(payload: dict):
+async def create_custom(payload: MCPCustomServerRequest):
     """注册自定义 MCP 服务器"""
-    name = payload.get("name", "").strip()
-    description = payload.get("description", "")
-    tools = payload.get("tools", [])
+    name = payload.name.strip()
     if not name:
-        return {"error": "name is required"}
-    if not tools:
-        return {"error": "at least one tool is required"}
-    result = register_custom_server(name, description, tools)
-    if result.startswith("Cannot") or result.startswith("No tools"):
-        return {"error": result}
+        raise HTTPException(status_code=422, detail="name is required")
+    result = register_custom_server(name, payload.description, payload.tools)
+    if result.startswith("Cannot"):
+        raise HTTPException(status_code=409, detail=result)
     return {"result": result, "servers": list_custom_servers()}
 
 
@@ -91,8 +95,10 @@ async def create_custom(payload: dict):
 async def delete_custom(name: str):
     """删除自定义 MCP 服务器"""
     result = remove_custom_server(name)
-    if result.startswith("Cannot") or result.startswith("Custom"):
-        return {"error": result}
+    if result.startswith("Cannot"):
+        raise HTTPException(status_code=400, detail=result)
+    if result.endswith("not found"):
+        raise HTTPException(status_code=404, detail=result)
     return {"result": result, "servers": list_custom_servers()}
 
 
@@ -106,7 +112,7 @@ async def reload_custom():
 # ============ 标准 MCP 服务器（stdio） ============
 
 @router.post("/stdio/connect")
-async def connect_stdio(payload: dict):
+async def connect_stdio(payload: MCPStdioConnectRequest):
     """通过 stdio 连接一个标准的 MCP 服务器
 
     请求体示例:
@@ -117,38 +123,34 @@ async def connect_stdio(payload: dict):
         "cwd": "d:/ai_agent/ai-devops-agent"
     }
     """
-    name = payload.get("name", "").strip()
-    command = payload.get("command", "")
-    args = payload.get("args", [])
-    cwd = payload.get("cwd", None)
-
+    name = payload.name.strip()
     if not name:
-        return {"error": "name is required"}
-    if not command:
-        return {"error": "command is required"}
-
-    result = connect_stdio_mcp(name, command, args, cwd)
+        raise HTTPException(status_code=422, detail="name is required")
+    result = connect_stdio_mcp(
+        name,
+        payload.command,
+        payload.args,
+        payload.cwd,
+    )
     if result.startswith("Error"):
-        return {"error": result}
+        raise HTTPException(status_code=400, detail=result)
     return {"result": result, "connected": list_connected_mcp()}
 
 
 @router.post("/stdio/disconnect")
-async def disconnect_stdio(payload: dict):
+async def disconnect_stdio(payload: MCPNameRequest):
     """断开标准 MCP 服务器连接"""
-    name = payload.get("name", "")
-    if not name:
-        return {"error": "name is required"}
+    name = payload.name.strip()
     result = disconnect_stdio_mcp(name)
     if result.startswith("Standard MCP server"):
-        return {"error": result}
+        raise HTTPException(status_code=404, detail=result)
     return {"result": result, "connected": list_connected_mcp()}
 
 
 # ============ 远程 MCP 服务器（SSE） ============
 
 @router.post("/sse/connect")
-async def connect_sse(payload: dict):
+async def connect_sse(payload: MCPSseConnectRequest):
     """通过 SSE 连接一个远程 MCP 服务器
 
     请求体示例:
@@ -157,27 +159,20 @@ async def connect_sse(payload: dict):
         "url": "http://localhost:8080/sse"
     }
     """
-    name = payload.get("name", "").strip()
-    url = payload.get("url", "").strip()
-
+    name = payload.name.strip()
     if not name:
-        return {"error": "name is required"}
-    if not url:
-        return {"error": "url is required"}
-
-    result = connect_sse_mcp(name, url)
+        raise HTTPException(status_code=422, detail="name is required")
+    result = connect_sse_mcp(name, payload.url.strip())
     if result.startswith("Error"):
-        return {"error": result}
+        raise HTTPException(status_code=400, detail=result)
     return {"result": result, "connected": list_connected_mcp()}
 
 
 @router.post("/sse/disconnect")
-async def disconnect_sse(payload: dict):
+async def disconnect_sse(payload: MCPNameRequest):
     """断开远程 SSE MCP 服务器连接"""
-    name = payload.get("name", "")
-    if not name:
-        return {"error": "name is required"}
+    name = payload.name.strip()
     result = disconnect_sse_mcp(name)
     if result.startswith("SSE MCP server"):
-        return {"error": result}
+        raise HTTPException(status_code=404, detail=result)
     return {"result": result, "connected": list_connected_mcp()}
