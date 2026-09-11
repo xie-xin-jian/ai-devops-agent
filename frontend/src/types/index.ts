@@ -30,7 +30,21 @@ export interface CronJob {
   message: string
   enabled: boolean
   created_at: number
+  running?: boolean
   last_run_at?: string
+  last_finished_at?: string
+  last_success?: boolean | null
+}
+
+export interface CronLog {
+  job_id: string
+  cron: string
+  prompt: string
+  fired_at: string
+  finished_at: string
+  success: boolean
+  output: string
+  error: string | null
 }
 
 // MCP 服务器

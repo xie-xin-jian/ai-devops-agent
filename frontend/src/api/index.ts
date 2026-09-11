@@ -1,4 +1,4 @@
-import type { Message, Task, CronJob, MCPServer, Tool, HealthStatus, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail } from '../types'
+import type { Message, Task, CronJob, CronLog, MCPServer, Tool, HealthStatus, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail } from '../types'
 
 const API_BASE = ''
 
@@ -139,7 +139,10 @@ export const cronApi = {
       message: j.prompt || '',
       enabled: j.enabled !== false,
       created_at: j.created_at || 0,
+      running: j.running === true,
       last_run_at: j.last_run_at,
+      last_finished_at: j.last_finished_at,
+      last_success: j.last_success,
     }))
     return { jobs, total: jobs.length }
   },
@@ -157,6 +160,8 @@ export const cronApi = {
     }),
   remove: (id: string) =>
     request<any>(`/api/cron/${id}`, { method: 'DELETE' }),
+  logs: (id: string, limit = 20) =>
+    request<CronLog[]>(`/api/cron/logs?job_id=${encodeURIComponent(id)}&limit=${limit}`),
 }
 
 // MCP - 后端返回 {connected, available, custom, stdio_servers}，做映射

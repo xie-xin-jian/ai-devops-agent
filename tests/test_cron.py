@@ -162,6 +162,14 @@ def test_scheduler_skips_job_that_is_already_pending(monkeypatch):
     assert cron._cron_execution_queue.qsize() == 0
 
 
+def test_job_pending_state_tracks_queue_and_completion():
+    assert cron.is_job_pending("cron_state") is False
+    assert cron._reserve_job("cron_state") is True
+    assert cron.is_job_pending("cron_state") is True
+    cron._release_job("cron_state")
+    assert cron.is_job_pending("cron_state") is False
+
+
 def test_cron_job_persists_metadata():
     """创建 Cron 任务时应保存前端填写的名称和描述。"""
     job, message = cron.schedule_job(

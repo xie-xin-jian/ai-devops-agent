@@ -281,6 +281,12 @@ def _release_job(job_id: str):
         _pending_job_ids.discard(job_id)
 
 
+def is_job_pending(job_id: str) -> bool:
+    """Return whether a job is currently queued or running."""
+    with _pending_lock:
+        return job_id in _pending_job_ids
+
+
 def _execute_cron_job_sync(job: CronJob, fired_at: datetime):
     """执行单个 Cron 任务，每次执行使用全新的 Agent 上下文。"""
     try:

@@ -1,17 +1,25 @@
 import { useState, useEffect } from 'react'
-import { Plus, Trash2, Clock, PlayCircle } from 'lucide-react'
+import { Plus, Trash2, Clock, PlayCircle, RefreshCw, FileText, CheckCircle2, XCircle, Loader2 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
+import { cronApi } from '../api'
 import Modal from '../components/Modal'
 import Button from '../components/Button'
 import { Input, Textarea } from '../components/Input'
 import Badge from '../components/Badge'
+import type { CronJob, CronLog } from '../types'
 
 export default function Cron() {
   const { cronJobs, fetchCronJobs, createCronJob, deleteCronJob } = useAppStore()
   const [modalOpen, setModalOpen] = useState(false)
+  const [logsOpen, setLogsOpen] = useState(false)
+  const [logsJob, setLogsJob] = useState<CronJob | null>(null)
+  const [logs, setLogs] = useState<CronLog[]>([])
+  const [logsLoading, setLogsLoading] = useState(false)
 
   useEffect(() => {
     fetchCronJobs()
+    const timer = setInterval(fetchCronJobs, 10000)
+    return () => clearInterval(timer)
   }, [fetchCronJobs])
 
   const [form, setForm] = useState({
@@ -38,6 +46,19 @@ export default function Cron() {
     { label: '每周一', expr: '0 9 * * 1' },
   ]
 
+  const openLogs = async (job: CronJob) => {
+    setLogsJob(job)
+    setLogsOpen(true)
+    setLogsLoading(true)
+    try {
+      setLogs(await cronApi.logs(job.id))
+    } catch {
+      setLogs([])
+    } finally {
+      setLogsLoading(false)
+    }
+  }
+
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="mx-auto max-w-5xl">
@@ -48,10 +69,16 @@ export default function Cron() {
               共 {cronJobs.length} 个定时任务
             </p>
           </div>
-          <Button onClick={() => setModalOpen(true)}>
-            <Plus size={16} />
-            新建定时任务
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={fetchCronJobs}>
+              <RefreshCw size={16} />
+              刷新
+            </Button>
+            <Button onClick={() => setModalOpen(true)}>
+              <Plus size={16} />
+              新建定时任务
+            </Button>
+          </div>
         </div>
 
         {/* 列表 */}
@@ -69,6 +96,7 @@ export default function Cron() {
                   <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary">名称</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary">Cron 表达式</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary">消息</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary">上次运行</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary">状态</th>
                   <th className="px-4 py-3 text-right text-xs font-medium text-text-secondary">操作</th>
                 </tr>
@@ -89,15 +117,27 @@ export default function Cron() {
                       {job.message}
                     </td>
                     <td className="px-4 py-3">
-                      <Badge variant={job.enabled ? 'success' : 'default'}>
-                        <PlayCircle size={10} className="mr-1" />
-                        {job.enabled ? '运行中' : '已停止'}
-                      </Badge>
+                      <div className="text-xs text-text-secondary">
+                        {formatRunTime(job.last_run_at)}
+                      </div>
+                      {job.last_finished_at && (
+                        <div className="mt-0.5 text-[11px] text-text-tertiary">
+                          完成于 {formatRunTime(job.last_finished_at)}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <CronStatus job={job} />
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <Button size="sm" variant="ghost" onClick={() => deleteCronJob(job.id)}>
-                        <Trash2 size={14} className="text-status-error" />
-                      </Button>
+                      <div className="flex justify-end gap-1">
+                        <Button size="sm" variant="ghost" onClick={() => openLogs(job)} title="查看日志">
+                          <FileText size={14} />
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => deleteCronJob(job.id)} title="删除">
+                          <Trash2 size={14} className="text-status-error" />
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -165,6 +205,64 @@ export default function Cron() {
           />
         </div>
       </Modal>
+
+      <Modal
+        open={logsOpen}
+        onClose={() => setLogsOpen(false)}
+        title={`执行记录 · ${logsJob?.name || ''}`}
+      >
+        <div className="max-h-[65vh] space-y-3 overflow-y-auto">
+          {logsLoading && (
+            <div className="flex items-center justify-center py-10 text-text-secondary">
+              <Loader2 size={18} className="mr-2 animate-spin" />
+              加载中...
+            </div>
+          )}
+          {!logsLoading && logs.length === 0 && (
+            <p className="py-10 text-center text-sm text-text-tertiary">
+              暂无执行记录。任务到达 Cron 时间后，这里会自动出现结果。
+            </p>
+          )}
+          {!logsLoading && logs.map((log) => (
+            <div key={`${log.job_id}-${log.fired_at}`} className="rounded-lg border border-border-primary bg-bg-primary p-3">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="text-xs text-text-secondary">
+                  {formatRunTime(log.fired_at)}
+                </span>
+                <Badge variant={log.success ? 'success' : 'error'}>
+                  {log.success ? <CheckCircle2 size={10} className="mr-1" /> : <XCircle size={10} className="mr-1" />}
+                  {log.success ? '成功' : '失败'}
+                </Badge>
+              </div>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-bg-secondary p-2 text-[11px] text-text-secondary">
+                {log.error || log.output || '(无输出)'}
+              </pre>
+            </div>
+          ))}
+        </div>
+      </Modal>
     </div>
   )
+}
+
+function formatRunTime(value?: string) {
+  if (!value) return '尚未运行'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function CronStatus({ job }: { job: CronJob }) {
+  if (!job.enabled) {
+    return <Badge variant="default"><PlayCircle size={10} className="mr-1" />已停止</Badge>
+  }
+  if (job.running) {
+    return <Badge variant="info"><Loader2 size={10} className="mr-1 animate-spin" />执行中</Badge>
+  }
+  if (job.last_success === true) {
+    return <Badge variant="success"><CheckCircle2 size={10} className="mr-1" />执行成功</Badge>
+  }
+  if (job.last_success === false) {
+    return <Badge variant="error"><XCircle size={10} className="mr-1" />执行失败</Badge>
+  }
+  return <Badge variant="warning"><Clock size={10} className="mr-1" />等待首次运行</Badge>
 }

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from agent.cron import (
     schedule_job, cancel_job, scheduled_jobs, validate_cron,
-    list_cron_run_logs, _last_fired,
+    list_cron_run_logs, _last_fired, is_job_pending,
 )
 from api.schemas import CronCreateRequest
 
@@ -29,6 +29,7 @@ async def list_cron_jobs():
             "recurring": job.recurring,
             "enabled": job.enabled,
             "created_at": job.created_at,
+            "running": is_job_pending(job.id),
             "last_run_at": _last_fired.get(job.id).isoformat(timespec="seconds") if _last_fired.get(job.id) else None,
             "last_success": last_log.get("success"),
             "last_finished_at": last_log.get("finished_at"),
