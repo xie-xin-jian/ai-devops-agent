@@ -15,6 +15,19 @@ def run_bash(command: str, cwd: str | Path | None = None,
         return "Error: Timeout (120s)"
 
 
+def run_bash_long(command: str, cwd: str | Path | None = None) -> str:
+    p = subprocess.Popen(command, shell=True, cwd=cwd or WORKDIR,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True)
+    try:
+        out, _ = p.communicate()
+    except KeyboardInterrupt:
+        p.kill()
+        return "Error: interrupted"
+    out = (out or "").strip()
+    return out[:50000] if out else "(no output)"
+
+
 BASH_SCHEMA = {
     "name": "bash",
     "description": "Run a shell command.",
