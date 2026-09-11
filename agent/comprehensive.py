@@ -53,6 +53,7 @@ from .task_system import (
 )
 from .background import (
     should_run_background, start_background_task, collect_background_results,
+    list_background_tasks,
 )
 from .cron import (
     schedule_job, cancel_job, consume_cron_queue, cron_scheduler_loop,
@@ -125,6 +126,7 @@ class ComprehensiveAgent:
         self._add_compact_tool()
         self._add_cron_tools()
         self._add_mcp_tools()
+        self._add_background_tools()
 
     def _add_todo_tool(self):
         schema = {
@@ -392,6 +394,20 @@ class ComprehensiveAgent:
         self.tools.append(schema)
         self.handlers["connect_mcp"] = lambda name: connect_mcp(name)
 
+    def _add_background_tools(self):
+        schema = {
+            "name": "list_background_tasks",
+            "description": (
+                "List all background tasks with their current status (running/completed) "
+                "and FULL output. Does NOT consume/modify them — safe to call repeatedly. "
+                "Use this to check whether a background task finished and read its result. "
+                "Prefer this over collect_background_results when you need to re-check a task."
+            ),
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+        }
+        self.tools.append(schema)
+        self.handlers["list_background_tasks"] = lambda: list_background_tasks()
+
     def _build_system_prompt(self) -> str:
         tool_names = [t["name"] for t in self.tools]
         sections = [
@@ -505,7 +521,7 @@ class ComprehensiveAgent:
             yield {"type": "status", "message": f"Cron 任务触发: {job.id}", "turn": 0}
             logger.info(f"[cron] 触发: {job.id} ({job.cron})")
 
-        max_turns = 30
+        max_turns = 50
         final_text = ""
         last_assistant_text = ""
 
