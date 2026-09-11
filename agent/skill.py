@@ -27,7 +27,7 @@ def scan_skills():
         manifest = directory / "SKILL.md"
         if not manifest.exists():
             continue
-        raw = manifest.read_text()
+        raw = manifest.read_text(encoding="utf-8")
         meta, _ = _parse_frontmatter(raw)
         name = meta.get("name", directory.name)
         desc = meta.get("description", raw.split("\n")[0].lstrip("#").strip())
