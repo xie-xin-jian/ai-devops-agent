@@ -3,6 +3,7 @@
 import sys
 import uuid
 import threading
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -18,7 +19,19 @@ from agent.comprehensive import ComprehensiveAgent
 from agent.config import WORKDIR, ALLOWED_ORIGINS
 from .schemas import CancelRequest, ChatRequest, SessionRequest
 
-app = FastAPI(title="AI DevOps Agent API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_app):
+    """Start background services as soon as the API process starts."""
+    _ensure_cron_started()
+    yield
+
+
+app = FastAPI(
+    title="AI DevOps Agent API",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
