@@ -184,6 +184,24 @@ export const useAppStore = create<AppState>((set, get) => ({
                 }
               })
               break
+            case 'cancelled':
+              set((s) => {
+                const cancelledMsg: Message | null = event.text
+                  ? {
+                      role: 'assistant',
+                      content: event.text,
+                      timestamp: Date.now(),
+                    }
+                  : null
+                return {
+                  messages: cancelledMsg ? [...s.messages, cancelledMsg] : s.messages,
+                  liveText: '',
+                  isStreaming: false,
+                  isLoading: false,
+                  currentStatus: '已停止',
+                }
+              })
+              break
           }
         },
         (sessionId) => {
@@ -209,7 +227,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   stopStreaming: () => {
+    const sessionId = get().sessionId
     const ctrl = get().streamAbortController
+    if (sessionId) {
+      systemApi.cancel(sessionId).catch(() => {
+        // The local abort still stops the visible stream if cancellation fails.
+      })
+    }
     if (ctrl) ctrl.abort()
     set({ isStreaming: false, isLoading: false, currentStatus: '已停止' })
   },

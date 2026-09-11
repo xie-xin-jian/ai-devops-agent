@@ -24,7 +24,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 
 // 对话
 export interface StreamEvent {
-  type: 'status' | 'tool_use' | 'tool_result' | 'thinking' | 'text_delta' | 'done' | 'error'
+  type: 'status' | 'tool_use' | 'tool_result' | 'thinking' | 'text_delta' | 'done' | 'cancelled' | 'error'
   message?: string
   turn?: number
   tool?: string
@@ -369,6 +369,11 @@ export const systemApi = {
   },
   reset: (sessionId?: string) =>
     request<{ status: string }>('/api/reset/', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId }),
+    }),
+  cancel: (sessionId: string) =>
+    request<{ status: string }>('/api/chat/cancel', {
       method: 'POST',
       body: JSON.stringify({ session_id: sessionId }),
     }),

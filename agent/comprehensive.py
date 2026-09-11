@@ -510,17 +510,31 @@ class ComprehensiveAgent:
         trigger_hooks("PostToolUse", block, output)
         return output
 
-    def run(self, user_message: str) -> str:
+    @staticmethod
+    def _is_cancelled(cancel_event) -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    def _cancelled_event(self) -> dict:
+        text = "已停止生成。"
+        self.messages.append({
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+        })
+        return {"type": "cancelled", "text": text}
+
+    def run(self, user_message: str, cancel_event=None) -> str:
         """同步执行 Agent 循环（非流式，保持原有行为不变）。"""
         final_text = None
-        for event in self.run_stream(user_message):
+        for event in self.run_stream(user_message, cancel_event):
             if event["type"] == "done":
+                final_text = event["text"]
+            elif event["type"] == "cancelled":
                 final_text = event["text"]
             elif event["type"] == "error":
                 raise RuntimeError(event["message"])
         return final_text or ""
 
-    def run_stream(self, user_message: str):
+    def run_stream(self, user_message: str, cancel_event=None):
         """流式执行 Agent 循环，每步 yield 一个事件 dict。
 
         事件类型：
@@ -529,12 +543,17 @@ class ComprehensiveAgent:
           {"type": "tool_result", "tool": str, "output": str, "turn": int, "duration_ms": int}
           {"type": "thinking", "turn": int}
           {"type": "done", "text": str, "total_turns": int}
+          {"type": "cancelled", "text": str}
           {"type": "error", "message": str}
         """
         trigger_hooks("UserPromptSubmit", user_message)
         self._last_user_query = user_message
         self.messages.append({"role": "user", "content": user_message})
         logger.info(f"[user] {user_message[:200]}")
+
+        if self._is_cancelled(cancel_event):
+            yield self._cancelled_event()
+            return
 
         yield {"type": "status", "message": "准备中...", "turn": 0}
 
@@ -552,6 +571,10 @@ class ComprehensiveAgent:
         last_assistant_text = ""
 
         for turn in range(max_turns):
+            if self._is_cancelled(cancel_event):
+                yield self._cancelled_event()
+                return
+
             yield {"type": "status", "message": f"第 {turn+1} 轮：压缩上下文", "turn": turn+1}
             self.messages = self._compact_if_needed(self.messages)
 
@@ -579,6 +602,10 @@ class ComprehensiveAgent:
                 logger.error(f"[turn {turn+1}] API 异常: {e}")
                 raise
 
+            if self._is_cancelled(cancel_event):
+                yield self._cancelled_event()
+                return
+
             self.messages.append({"role": "assistant", "content": response.content})
 
             # 收集这段文字回复（如果有）
@@ -598,9 +625,22 @@ class ComprehensiveAgent:
 
             # 执行所有工具调用
             results = []
-            for block in response.content:
+            for block_index, block in enumerate(response.content):
                 if block.type != "tool_use":
                     continue
+
+                if self._is_cancelled(cancel_event):
+                    for remaining in response.content[block_index:]:
+                        if remaining.type == "tool_use":
+                            results.append({
+                                "type": "tool_result",
+                                "tool_use_id": remaining.id,
+                                "content": "Error: cancelled by user",
+                            })
+                    if results:
+                        self.messages.append({"role": "user", "content": results})
+                    yield self._cancelled_event()
+                    return
 
                 logger.info(f"[turn {turn+1}] tool_use: {block.name}")
                 yield {
