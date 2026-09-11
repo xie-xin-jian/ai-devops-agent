@@ -56,7 +56,7 @@ from .background import (
     list_background_tasks,
 )
 from .cron import (
-    schedule_job, cancel_job, consume_cron_queue, cron_scheduler_loop,
+    schedule_job, cancel_job, cron_scheduler_loop,
     load_durable_jobs,
 )
 from .memory import MemorySystem
@@ -170,6 +170,11 @@ class ComprehensiveAgent:
                             "type": "array",
                             "items": {"type": "string"},
                         },
+                        "priority": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high"],
+                            "default": "medium",
+                        },
                     },
                     "required": ["subject"],
                 },
@@ -202,14 +207,21 @@ class ComprehensiveAgent:
                 "description": "Mark an in-progress task as completed.",
                 "input_schema": {
                     "type": "object",
-                    "properties": {"task_id": {"type": "string"}},
+                    "properties": {
+                        "task_id": {"type": "string"},
+                        "result": {"type": "string"},
+                    },
                     "required": ["task_id"],
                 },
             },
         ]
         handlers = {
-            "create_task": lambda subject, description="", blockedBy=None: (
-                json.dumps({"id": create_task(subject, description, blockedBy).id})
+            "create_task": lambda subject, description="", blockedBy=None, priority="medium": (
+                json.dumps({
+                    "id": create_task(
+                        subject, description, blockedBy, priority
+                    ).id
+                })
             ),
             "list_tasks": lambda: "\n".join(
                 f"  {t.id}: {t.subject} [{t.status}]" + (f" (owner: {t.owner})" if t.owner else "")
@@ -217,7 +229,7 @@ class ComprehensiveAgent:
             ) or "No tasks.",
             "get_task": lambda task_id: get_task_json(task_id),
             "claim_task": lambda task_id: claim_task(task_id),
-            "complete_task": lambda task_id: complete_task(task_id),
+            "complete_task": lambda task_id, result="": complete_task(task_id, result),
         }
         self.tools.extend(tools)
         self.handlers.update(handlers)
@@ -323,6 +335,9 @@ class ComprehensiveAgent:
                         "cron": {"type": "string"},
                         "prompt": {"type": "string"},
                         "recurring": {"type": "boolean", "default": True},
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "enabled": {"type": "boolean", "default": True},
                     },
                     "required": ["cron", "prompt"],
                 },
@@ -356,12 +371,32 @@ class ComprehensiveAgent:
         ]
         from .cron import scheduled_jobs, _last_fired, list_cron_run_logs
 
+        def _schedule(
+            cron,
+            prompt,
+            recurring=True,
+            name="",
+            description="",
+            enabled=True,
+        ):
+            job, message = schedule_job(
+                cron,
+                prompt,
+                recurring,
+                name=name,
+                description=description,
+                enabled=enabled,
+            )
+            if job is None:
+                return message
+            label = job.name or job.id
+            return f"Scheduled {job.id} ({label}, {job.cron})"
+
         handlers = {
-            "schedule_cron": lambda cron, prompt, recurring=True: (
-                lambda j: f"Scheduled {j.id} ({j.cron})" if hasattr(j, "id") else str(j)
-            )(schedule_job(cron, prompt, recurring)),
+            "schedule_cron": _schedule,
             "list_crons": lambda: "\n".join(
-                f"  {j.id}: {j.cron} {'recurring' if j.recurring else 'once'}"
+                f"  {j.id}: {j.name or '(unnamed)'} | {j.cron}"
+                f" {'recurring' if j.recurring else 'once'}"
                 f" | last_run={_last_fired.get(j.id).strftime('%H:%M:%S') if _last_fired.get(j.id) else 'never'}"
                 f" | prompt={j.prompt[:50]}"
                 for j in scheduled_jobs.values()
@@ -511,15 +546,6 @@ class ComprehensiveAgent:
             })
             yield {"type": "status", "message": f"收到 {len(bg_notifications)} 条后台任务通知", "turn": 0}
             logger.info(f"[bg] 收到 {len(bg_notifications)} 条后台任务通知")
-
-        cron_jobs = consume_cron_queue()
-        for job in cron_jobs:
-            self.messages.append({
-                "role": "user",
-                "content": f"<cron_job>\n<id>{job.id}</id>\n<schedule>{job.cron}</schedule>\n<prompt>{job.prompt}</prompt>\n</cron_job>",
-            })
-            yield {"type": "status", "message": f"Cron 任务触发: {job.id}", "turn": 0}
-            logger.info(f"[cron] 触发: {job.id} ({job.cron})")
 
         max_turns = 50
         final_text = ""

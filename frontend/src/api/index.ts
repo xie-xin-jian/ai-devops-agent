@@ -103,6 +103,7 @@ export const taskApi = {
         subject: data.subject,
         description: data.description,
         blockedBy: data.blockedBy,
+        priority: data.priority,
       }),
     }),
   claim: (id: string) =>
@@ -119,7 +120,7 @@ export const taskApi = {
     request<{ success: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' }),
 }
 
-// Cron - 后端字段是 id/cron/prompt/recurring，前端字段不同，做映射
+// Cron - 在 API 边界完成前后端字段映射
 export const cronApi = {
   list: async () => {
     const res: any = await request<any>('/api/cron/')
@@ -128,9 +129,9 @@ export const cronApi = {
       id: j.id,
       name: j.name || j.id,
       description: j.description || '',
-      cron_expression: j.cron_expression || j.cron || '',
-      message: j.message || j.prompt || '',
-      enabled: j.enabled !== false && j.recurring !== false,
+      cron_expression: j.cron || '',
+      message: j.prompt || '',
+      enabled: j.enabled !== false,
       created_at: j.created_at || 0,
       last_run_at: j.last_run_at,
     }))
@@ -140,9 +141,12 @@ export const cronApi = {
     request<any>('/api/cron/', {
       method: 'POST',
       body: JSON.stringify({
+        name: data.name,
+        description: data.description,
         cron: data.cron_expression,
         prompt: data.message,
         recurring: data.enabled !== false,
+        enabled: data.enabled !== false,
       }),
     }),
   remove: (id: string) =>

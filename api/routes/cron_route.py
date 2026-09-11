@@ -21,9 +21,13 @@ async def list_cron_jobs():
         last_log = logs_by_job.get(job.id, {})
         jobs.append({
             "id": job.id,
+            "name": job.name,
+            "description": job.description,
             "cron": job.cron,
             "prompt": job.prompt,
             "recurring": job.recurring,
+            "enabled": job.enabled,
+            "created_at": job.created_at,
             "last_run_at": _last_fired.get(job.id).isoformat(timespec="seconds") if _last_fired.get(job.id) else None,
             "last_success": last_log.get("success"),
             "last_finished_at": last_log.get("finished_at"),
@@ -41,13 +45,32 @@ async def create_cron_job(payload: dict):
     cron = payload.get("cron", "")
     prompt = payload.get("prompt", "")
     recurring = payload.get("recurring", True)
+    name = payload.get("name", "")
+    description = payload.get("description", "")
+    enabled = payload.get("enabled", True)
     if not cron or not prompt:
         return {"error": "cron and prompt are required"}
     if not validate_cron(cron):
         return {"error": "Invalid cron expression"}
-    job, msg = schedule_job(cron, prompt, recurring)
+    job, msg = schedule_job(
+        cron,
+        prompt,
+        recurring,
+        name=name,
+        description=description,
+        enabled=enabled,
+    )
     if job is not None:
-        return {"id": job.id, "cron": job.cron}
+        return {
+            "id": job.id,
+            "name": job.name,
+            "description": job.description,
+            "cron": job.cron,
+            "prompt": job.prompt,
+            "recurring": job.recurring,
+            "enabled": job.enabled,
+            "created_at": job.created_at,
+        }
     return {"error": msg}
 
 

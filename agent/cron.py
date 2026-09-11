@@ -2,9 +2,9 @@ import time
 import random
 import threading
 import json
-from pathlib import Path
+import queue
 from dataclasses import dataclass, asdict, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 from agent.config import DURABLE_CRON_PATH, WORKDIR
 
@@ -16,20 +16,24 @@ class CronJob:
     prompt: str
     recurring: bool = True
     durable: bool = True
+    name: str = ""
+    description: str = ""
+    enabled: bool = True
+    created_at: float = field(default_factory=time.time)
 
 
 scheduled_jobs: dict[str, CronJob] = {}
-cron_queue: list[CronJob] = []
 cron_lock = threading.Lock()
 _last_fired: dict[str, datetime] = {}
 
-# 后台执行用：防止同一个 job_id 重入（前一次没跑完，下一分钟又触发）
-_running_job_ids: set[str] = set()
-_running_lock = threading.Lock()
+# 后台执行用：防止同一个 job_id 在排队或运行期间被重复触发。
+_pending_job_ids: set[str] = set()
+_pending_lock = threading.Lock()
 
-# 后台 Agent 单例（懒加载，避免循环 import）
-_bg_agent = None
-_bg_agent_lock = threading.Lock()
+# Cron 任务统一进入单执行器，避免多个 Agent 实例并发访问共享工具和文件。
+_cron_execution_queue: queue.Queue[tuple[CronJob, datetime]] = queue.Queue()
+_cron_worker_thread: Optional[threading.Thread] = None
+_cron_worker_lock = threading.Lock()
 
 CRON_LOG_DIR = WORKDIR / ".cron_logs"
 
@@ -164,13 +168,32 @@ def load_durable_jobs():
         with open(DURABLE_CRON_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
         for jid, job_data in data.items():
-            job = CronJob(**job_data)
+            job = CronJob(
+                id=job_data.get("id", jid),
+                cron=job_data["cron"],
+                prompt=job_data["prompt"],
+                recurring=job_data.get("recurring", True),
+                durable=job_data.get("durable", True),
+                name=job_data.get("name", ""),
+                description=job_data.get("description", ""),
+                enabled=job_data.get("enabled", True),
+                created_at=job_data.get("created_at", time.time()),
+            )
             scheduled_jobs[jid] = job
     except Exception:
         pass
 
 
-def schedule_job(cron: str, prompt: str, recurring: bool = True, durable: bool = True) -> tuple[Optional[CronJob], str]:
+def schedule_job(
+    cron: str,
+    prompt: str,
+    recurring: bool = True,
+    durable: bool = True,
+    *,
+    name: str = "",
+    description: str = "",
+    enabled: bool = True,
+) -> tuple[Optional[CronJob], str]:
     if not validate_cron(cron):
         return None, "Invalid cron expression"
 
@@ -181,6 +204,9 @@ def schedule_job(cron: str, prompt: str, recurring: bool = True, durable: bool =
         prompt=prompt,
         recurring=recurring,
         durable=durable,
+        name=name,
+        description=description,
+        enabled=enabled,
     )
 
     with cron_lock:
@@ -204,19 +230,13 @@ def cancel_job(job_id: str) -> str:
     return f"Job {job_id} cancelled"
 
 
-def _get_bg_agent():
-    """获取后台专用的 Agent 单例（懒加载，避免与用户 session 串话）。"""
-    global _bg_agent
-    if _bg_agent is not None:
-        return _bg_agent
-    with _bg_agent_lock:
-        if _bg_agent is not None:
-            return _bg_agent
-        from agent.comprehensive import ComprehensiveAgent
-        from agent.mcp import load_all_custom_servers
-        load_all_custom_servers()
-        _bg_agent = ComprehensiveAgent()
-    return _bg_agent
+def _create_cron_agent():
+    """为单次 Cron 执行创建独立 Agent，隔离对话上下文。"""
+    from agent.comprehensive import ComprehensiveAgent
+    from agent.mcp import load_all_custom_servers
+
+    load_all_custom_servers()
+    return ComprehensiveAgent()
 
 
 def _save_cron_run_log(job: CronJob, fired_at: datetime, output: str, error: Optional[str] = None):
@@ -241,64 +261,85 @@ def _save_cron_run_log(job: CronJob, fired_at: datetime, output: str, error: Opt
         pass
 
 
+def _reserve_job(job_id: str) -> bool:
+    """预留任务执行权。已有同任务排队或运行时返回 False。"""
+    with _pending_lock:
+        if job_id in _pending_job_ids:
+            return False
+        _pending_job_ids.add(job_id)
+        return True
+
+
+def _release_job(job_id: str):
+    with _pending_lock:
+        _pending_job_ids.discard(job_id)
+
+
 def _execute_cron_job_sync(job: CronJob, fired_at: datetime):
-    """真正在后台线程执行 Cron 任务。阻塞函数，由外层 threading.Thread 调用。"""
-    # 防重入
-    with _running_lock:
-        if job.id in _running_job_ids:
-            return
-        _running_job_ids.add(job.id)
+    """执行单个 Cron 任务，每次执行使用全新的 Agent 上下文。"""
     try:
-        agent = _get_bg_agent()
+        agent = _create_cron_agent()
         output = agent.run(job.prompt)
         _save_cron_run_log(job, fired_at, output)
     except Exception as e:
         _save_cron_run_log(job, fired_at, "", error=str(e))
-    finally:
-        with _running_lock:
-            _running_job_ids.discard(job.id)
+
+
+def _cron_worker_loop():
+    """串行消费 Cron 执行队列，保证任务之间不会并发污染上下文。"""
+    while True:
+        job, fired_at = _cron_execution_queue.get()
+        try:
+            _execute_cron_job_sync(job, fired_at)
+        finally:
+            _release_job(job.id)
+            _cron_execution_queue.task_done()
+
+
+def _ensure_cron_worker_started():
+    """全局只启动一个 Cron 执行线程。"""
+    global _cron_worker_thread
+    if _cron_worker_thread is not None and _cron_worker_thread.is_alive():
+        return
+    with _cron_worker_lock:
+        if _cron_worker_thread is not None and _cron_worker_thread.is_alive():
+            return
+        _cron_worker_thread = threading.Thread(
+            target=_cron_worker_loop,
+            daemon=True,
+            name="cron-worker",
+        )
+        _cron_worker_thread.start()
 
 
 def cron_scheduler_loop():
+    _ensure_cron_worker_started()
     while True:
         now = datetime.now()
         now_truncated = now.replace(second=0, microsecond=0)
+        schedule_changed = False
 
         with cron_lock:
             for job_id, job in list(scheduled_jobs.items()):
+                if not job.enabled:
+                    continue
                 if cron_matches(job.cron, now_truncated):
                     last = _last_fired.get(job_id)
                     if last is None or last < now_truncated:
-                        # 兼容逻辑：也放进队列，用户下次发消息时会收到"有个 cron 执行了"的提示
-                        cron_queue.append(job)
                         _last_fired[job_id] = now_truncated
 
                         if not job.recurring:
                             del scheduled_jobs[job_id]
                             _last_fired.pop(job_id, None)
+                            schedule_changed = True
 
-                        # 真正的自动执行：起一个后台线程跑 Agent，不等用户发消息
-                        t = threading.Thread(
-                            target=_execute_cron_job_sync,
-                            args=(job, now_truncated),
-                            daemon=True,
-                            name=f"cron-exec-{job.id}",
-                        )
-                        t.start()
+                        if _reserve_job(job_id):
+                            _cron_execution_queue.put((job, now_truncated))
 
-            if any(job.durable for job in cron_queue) or not all(
-                jid in scheduled_jobs for jid in list(_last_fired.keys())
-            ):
+            if schedule_changed:
                 save_durable_jobs()
 
         time.sleep(1)
-
-
-def consume_cron_queue() -> list[CronJob]:
-    with cron_lock:
-        jobs = list(cron_queue)
-        cron_queue.clear()
-        return jobs
 
 
 def list_cron_run_logs(job_id: Optional[str] = None, limit: int = 20) -> list[dict]:

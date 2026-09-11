@@ -30,7 +30,7 @@ export interface CronJob {
   message: string
   enabled: boolean
   created_at: number
-  last_run_at?: number
+  last_run_at?: string
 }
 
 // MCP 服务器
