@@ -2,6 +2,9 @@
 
 使用 isolated_tasks_dir fixture 隔离测试数据，避免污染真实 .tasks/ 目录。
 """
+import json
+import time
+
 import pytest
 from agent.task_system import (
     create_task, claim_task, complete_task, list_tasks,
@@ -13,10 +16,38 @@ from agent.task_system import (
 
 def test_create_task(isolated_tasks_dir):
     """创建任务应生成正确格式。"""
-    t = create_task("Task 1", "First task")
+    before = time.time()
+    t = create_task("Task 1", "First task", priority="high")
+    after = time.time()
+
     assert t.id.startswith("task_")
     assert t.status == "pending"
     assert t.owner is None
+    assert t.priority == "high"
+    assert before <= t.created_at <= after
+    assert t.created_at <= t.updated_at <= after
+
+
+def test_legacy_task_defaults(isolated_tasks_dir):
+    """缺少新字段的旧任务文件仍应能够加载。"""
+    task_id = "task_legacy"
+    (isolated_tasks_dir / f"{task_id}.json").write_text(
+        json.dumps({
+            "id": task_id,
+            "subject": "Legacy task",
+            "description": "",
+            "status": "pending",
+            "owner": None,
+            "blockedBy": [],
+        }),
+        encoding="utf-8",
+    )
+
+    task = load_task(task_id)
+    assert task.priority == "medium"
+    assert task.created_at > 0
+    assert task.updated_at > 0
+    assert task.result == ""
 
 
 def test_get_task_json(isolated_tasks_dir):
@@ -60,10 +91,11 @@ def test_complete_task(isolated_tasks_dir):
     """完成任务后状态应为 completed。"""
     t = create_task("Task 1")
     claim_task(t.id)
-    result = complete_task(t.id)
+    result = complete_task(t.id, "inspection passed")
     assert "Completed" in result
     loaded = load_task(t.id)
     assert loaded.status == "completed"
+    assert loaded.result == "inspection passed"
 
 
 # ── 依赖关系 ──
@@ -109,3 +141,21 @@ def test_cannot_complete_non_in_progress(isolated_tasks_dir):
     t = create_task("Task 1")
     result = complete_task(t.id)
     assert "cannot complete" in result
+
+
+@pytest.mark.asyncio
+async def test_task_api_preserves_priority(isolated_tasks_dir):
+    """任务 API 应将前端 priority 写入持久化数据。"""
+    pytest.importorskip("fastapi")
+    from api.routes.task import create_new_task
+
+    response = await create_new_task({
+        "subject": "High priority task",
+        "description": "details",
+        "priority": "high",
+    })
+
+    assert response["priority"] == "high"
+    assert response["created_at"] > 0
+    assert response["updated_at"] > 0
+    assert load_task(response["id"]).priority == "high"

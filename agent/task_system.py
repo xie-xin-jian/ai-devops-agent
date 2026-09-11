@@ -1,11 +1,12 @@
 import json
 import time
 import random
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from agent.config import TASKS_DIR
 
 TASKS_DIR.mkdir(exist_ok=True)
+VALID_PRIORITIES = {"low", "medium", "high"}
 
 
 @dataclass
@@ -16,34 +17,69 @@ class Task:
     status: str
     owner: str | None
     blockedBy: list[str]
+    priority: str = "medium"
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    result: str = ""
 
 
 def _task_path(task_id: str) -> Path:
     return TASKS_DIR / f"{task_id}.json"
 
 
+def _task_from_dict(data: dict) -> Task:
+    """兼容旧任务文件，缺失的新字段使用默认值。"""
+    created_at = data.get("created_at") or time.time()
+    priority = data.get("priority", "medium")
+    if priority not in VALID_PRIORITIES:
+        priority = "medium"
+    return Task(
+        id=data["id"],
+        subject=data["subject"],
+        description=data.get("description", ""),
+        status=data.get("status", "pending"),
+        owner=data.get("owner"),
+        blockedBy=data.get("blockedBy") or [],
+        priority=priority,
+        created_at=created_at,
+        updated_at=data.get("updated_at") or created_at,
+        result=data.get("result", ""),
+    )
+
+
 def create_task(subject: str, description: str = "",
-                blockedBy: list[str] | None = None) -> Task:
+                blockedBy: list[str] | None = None,
+                priority: str = "medium") -> Task:
+    if priority not in VALID_PRIORITIES:
+        priority = "medium"
+    now = time.time()
     task = Task(
         id=f"task_{int(time.time())}_{random.randint(0, 9999):04d}",
         subject=subject, description=description,
         status="pending", owner=None,
         blockedBy=blockedBy or [],
+        priority=priority,
+        created_at=now,
+        updated_at=now,
     )
     save_task(task)
     return task
 
 
 def save_task(task: Task):
-    _task_path(task.id).write_text(json.dumps(asdict(task), indent=2))
+    task.updated_at = time.time()
+    _task_path(task.id).write_text(
+        json.dumps(asdict(task), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def load_task(task_id: str) -> Task:
-    return Task(**json.loads(_task_path(task_id).read_text()))
+    return _task_from_dict(json.loads(_task_path(task_id).read_text(encoding="utf-8")))
 
 
 def list_tasks() -> list[Task]:
-    return [Task(**json.loads(p.read_text()))
+    return [_task_from_dict(json.loads(p.read_text(encoding="utf-8")))
             for p in sorted(TASKS_DIR.glob("task_*.json"))]
 
 
@@ -82,11 +118,12 @@ def claim_task(task_id: str, owner: str = "agent") -> str:
     return f"Claimed {task.id} ({task.subject})"
 
 
-def complete_task(task_id: str) -> str:
+def complete_task(task_id: str, result: str = "") -> str:
     task = load_task(task_id)
     if task.status != "in_progress":
         return f"Task {task_id} is {task.status}, cannot complete"
     task.status = "completed"
+    task.result = result
     save_task(task)
     unblocked = [t.subject for t in list_tasks()
                  if t.status == "pending" and t.blockedBy and can_start(t.id)]

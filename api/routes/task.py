@@ -1,25 +1,18 @@
 from fastapi import APIRouter
 from dataclasses import asdict
-from pathlib import Path
-import json
 
 from agent.task_system import (
     Task, create_task, list_tasks, load_task, claim_task, complete_task,
-    save_task, TASKS_DIR,
+    TASKS_DIR, VALID_PRIORITIES,
 )
 
 router = APIRouter()
 
 
 def _task_dict(t: Task) -> dict:
-    """把 Task 对象转为字典，补全前端可能期望的字段（做兜底）。"""
+    """把 Task 对象转换为 API 字典。"""
     d = asdict(t)
-    # 前端可能期望这些字段，后端 dataclass 没有，给默认值
-    d.setdefault("priority", "medium")
     d.setdefault("details", "")
-    d.setdefault("result", "")
-    d.setdefault("created_at", 0)
-    d.setdefault("updated_at", 0)
     d.setdefault("assignee", t.owner)
     return d
 
@@ -35,9 +28,12 @@ async def create_new_task(payload: dict):
     subject = payload.get("subject", "")
     description = payload.get("description", "")
     blockedBy = payload.get("blockedBy", None)
+    priority = payload.get("priority", "medium")
     if not subject:
         return {"error": "subject is required"}
-    task = create_task(subject, description, blockedBy)
+    if priority not in VALID_PRIORITIES:
+        return {"error": "priority must be one of: low, medium, high"}
+    task = create_task(subject, description, blockedBy, priority)
     return _task_dict(task)
 
 
@@ -61,16 +57,8 @@ async def claim(task_id: str, payload: dict = None):
 
 @router.post("/{task_id}/complete")
 async def complete(task_id: str, payload: dict = None):
-    # 可选记录完成结果（存到 details 字段，因为 dataclass 没有 result 字段）
     result_text = (payload or {}).get("result", "")
-    if result_text:
-        try:
-            t = load_task(task_id)
-            t.description = f"{t.description}\n[完成结果] {result_text}".strip()
-            save_task(t)
-        except Exception:
-            pass
-    msg = complete_task(task_id)
+    msg = complete_task(task_id, result_text)
     try:
         return _task_dict(load_task(task_id))
     except Exception:
