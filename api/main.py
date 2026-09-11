@@ -25,6 +25,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["session-id"],
 )
 
 # Session 管理：每个 session 拥有独立的 Agent 实例，避免多用户串话
@@ -147,9 +148,11 @@ async def chat_stream(payload: dict):
 async def get_messages(session_id: str = ""):
     if not session_id or session_id not in _sessions:
         return {"messages": []}
-    agent = _sessions[session_id]["agent"]
-    msgs = [{"role": msg["role"]} for msg in agent.get_messages()]
-    return {"messages": msgs}
+    from agent.messages import serialize_visible_messages
+    session = _sessions[session_id]
+    session["last_used"] = datetime.now()
+    agent = session["agent"]
+    return {"messages": serialize_visible_messages(agent.get_messages())}
 
 
 @app.post("/api/reset/")

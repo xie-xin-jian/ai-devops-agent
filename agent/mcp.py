@@ -390,12 +390,14 @@ from typing import Any
 _stdio_mcp_sessions: dict[str, dict] = {}
 _stdio_mcp_lock = threading.Lock()
 _next_id = 1000
+_next_id_lock = threading.Lock()
 
 
 def _next_rpc_id() -> int:
     global _next_id
-    _next_id += 1
-    return _next_id
+    with _next_id_lock:
+        _next_id += 1
+        return _next_id
 
 
 def _tool_to_schema(tool_def: dict) -> dict:
@@ -427,8 +429,12 @@ def _send_rpc(proc: subprocess.Popen, method: str, params: dict | None = None,
     return req.get("id")
 
 
-def _recv_response(proc: subprocess.Popen, timeout: float = 30.0) -> dict:
-    """读取 MCP 服务器的 JSON-RPC 响应。"""
+def _recv_response(
+    proc: subprocess.Popen,
+    timeout: float = 30.0,
+    request_id: int | None = None,
+) -> dict:
+    """读取并校验 MCP 服务器的 JSON-RPC 响应。"""
     import time
 
     end_time = time.time() + timeout
@@ -437,7 +443,9 @@ def _recv_response(proc: subprocess.Popen, timeout: float = 30.0) -> dict:
         if line:
             try:
                 data = json.loads(line.strip())
-                if "id" in data:
+                if "id" in data and (
+                    request_id is None or data["id"] == request_id
+                ):
                     return data
             except json.JSONDecodeError:
                 continue
@@ -454,11 +462,14 @@ def _make_stdio_handler(server_name: str, tool_name: str):
             return f"MCP error: server '{server_name}' not connected"
         proc = session["proc"]
         try:
-            req_id = _send_rpc(
-                proc, "tools/call",
-                {"name": tool_name, "arguments": kwargs}
-            )
-            resp = _recv_response(proc)
+            with session["lock"]:
+                req_id = _send_rpc(
+                    proc, "tools/call",
+                    {"name": tool_name, "arguments": kwargs}
+                )
+                resp = _recv_response(proc, request_id=req_id)
+            if "error" in resp:
+                return f"MCP error: {resp['error']}"
             result = resp.get("result", {})
             content = result.get("content", [])
             parts = []
@@ -503,7 +514,7 @@ def connect_stdio_mcp(name: str, command: str, args: list[str] | None = None,
                 bufsize=1,
             )
 
-            _send_rpc(
+            init_id = _send_rpc(
                 proc, "initialize",
                 {
                     "protocolVersion": "2024-11-05",
@@ -511,14 +522,18 @@ def connect_stdio_mcp(name: str, command: str, args: list[str] | None = None,
                     "clientInfo": {"name": "devops-agent", "version": "1.0"}
                 }
             )
-            init_resp = _recv_response(proc)
+            init_resp = _recv_response(proc, request_id=init_id)
+            if "error" in init_resp:
+                raise RuntimeError(init_resp["error"])
             server_info = init_resp.get("result", {}).get("serverInfo", {})
             server_name = server_info.get("name", name)
 
             _send_rpc(proc, "notifications/initialized", params=None, request_id=0)
 
-            _send_rpc(proc, "tools/list")
-            tools_resp = _recv_response(proc)
+            tools_id = _send_rpc(proc, "tools/list")
+            tools_resp = _recv_response(proc, request_id=tools_id)
+            if "error" in tools_resp:
+                raise RuntimeError(tools_resp["error"])
             tools_list = tools_resp.get("result", {}).get("tools", [])
             tool_defs = [_tool_to_schema(t) for t in tools_list]
 
@@ -529,7 +544,11 @@ def connect_stdio_mcp(name: str, command: str, args: list[str] | None = None,
 
             client.register(tool_defs, handlers)
             mcp_clients[name] = client
-            _stdio_mcp_sessions[name] = {"proc": proc, "server_name": server_name}
+            _stdio_mcp_sessions[name] = {
+                "proc": proc,
+                "server_name": server_name,
+                "lock": threading.Lock(),
+            }
 
             tool_names = [t["name"] for t in tools_list]
             return (f"Connected to standard MCP server '{name}' ({server_name}). "
@@ -548,8 +567,9 @@ def disconnect_stdio_mcp(name: str) -> str:
         proc = session.get("proc")
         if proc:
             try:
-                proc.terminate()
-                proc.wait(timeout=3)
+                with session["lock"]:
+                    proc.terminate()
+                    proc.wait(timeout=3)
             except Exception:
                 try:
                     proc.kill()

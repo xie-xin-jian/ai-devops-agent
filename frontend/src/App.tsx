@@ -11,6 +11,7 @@ import { useAppStore } from './store/useAppStore'
 function App() {
   const view = useAppStore((s) => s.view)
   const checkHealth = useAppStore((s) => s.checkHealth)
+  const fetchMessages = useAppStore((s) => s.fetchMessages)
 
   // 初始化主题
   useEffect(() => {
@@ -28,6 +29,10 @@ function App() {
     const timer = setInterval(checkHealth, 10000)
     return () => clearInterval(timer)
   }, [checkHealth])
+
+  useEffect(() => {
+    fetchMessages()
+  }, [fetchMessages])
 
   const pages: Record<string, React.ReactNode> = {
     chat: <Chat />,

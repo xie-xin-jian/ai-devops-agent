@@ -25,6 +25,7 @@ interface AppState {
   isLoading: boolean
   sessionId: string
   sendMessage: (msg: string) => Promise<void>
+  fetchMessages: () => Promise<void>
   resetMessages: () => Promise<void>
 
   // 流式状态（用于执行轨迹面板）
@@ -99,6 +100,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   currentStatus: '',
   streamAbortController: null,
 
+  fetchMessages: async () => {
+    const sessionId = get().sessionId
+    if (!sessionId) return
+    try {
+      const res = await systemApi.messages(sessionId)
+      if (!get().isStreaming && get().messages.length === 0) {
+        set({ messages: res.messages || [] })
+      }
+    } catch {
+      // History restoration should not block the chat page from loading.
+    }
+  },
+
   sendMessage: async (msg: string) => {
     if (!msg.trim() || get().isStreaming) return
     const userMsg: Message = { role: 'user', content: msg, timestamp: Date.now() }
@@ -116,59 +130,74 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ streamAbortController: controller })
 
     try {
-      await chatApi.stream(msg, get().sessionId, (event: StreamEvent) => {
-        switch (event.type) {
-          case 'status':
-            set({ currentStatus: event.message || '', currentTurn: event.turn || 0 })
-            break
-          case 'thinking':
-            set({ currentStatus: `第 ${event.turn} 轮：思考中...` })
-            break
-          case 'tool_use':
-            set((s) => ({
-              toolHistory: [...s.toolHistory, {
-                turn: event.turn!,
-                tool: event.tool!,
-                input: event.input,
-                status: 'running',
-              }],
-              currentStatus: `正在调用 ${event.tool}`,
-            }))
-            break
-          case 'tool_result':
-            set((s) => ({
-              toolHistory: s.toolHistory.map((t) =>
-                t.turn === event.turn && t.tool === event.tool
-                  ? { ...t, output: event.output, duration_ms: event.duration_ms, status: 'done' }
-                  : t
-              ),
-              currentStatus: `${event.tool} 完成 (${event.duration_ms}ms)`,
-            }))
-            break
-          case 'text_delta':
-            set((s) => ({ liveText: s.liveText + event.delta }))
-            break
-          case 'error':
-            set({ currentStatus: `错误: ${event.message}` })
-            break
-          case 'done':
-            set((s) => {
-              const aiMsg: Message = {
-                role: 'assistant',
-                content: event.text || s.liveText,
-                timestamp: Date.now(),
-              }
-              return {
-                messages: [...s.messages, aiMsg],
-                liveText: '',
-                isStreaming: false,
-                isLoading: false,
-                currentStatus: `完成，共 ${event.total_turns} 轮`,
-              }
-            })
-            break
-        }
-      }, controller.signal)
+      const nextSessionId = await chatApi.stream(
+        msg,
+        get().sessionId,
+        (event: StreamEvent) => {
+          switch (event.type) {
+            case 'status':
+              set({ currentStatus: event.message || '', currentTurn: event.turn || 0 })
+              break
+            case 'thinking':
+              set({ currentStatus: `第 ${event.turn} 轮：思考中...` })
+              break
+            case 'tool_use':
+              set((s) => ({
+                toolHistory: [...s.toolHistory, {
+                  turn: event.turn!,
+                  tool: event.tool!,
+                  input: event.input,
+                  status: 'running',
+                }],
+                currentStatus: `正在调用 ${event.tool}`,
+              }))
+              break
+            case 'tool_result':
+              set((s) => ({
+                toolHistory: s.toolHistory.map((t) =>
+                  t.turn === event.turn && t.tool === event.tool
+                    ? { ...t, output: event.output, duration_ms: event.duration_ms, status: 'done' }
+                    : t
+                ),
+                currentStatus: `${event.tool} 完成 (${event.duration_ms}ms)`,
+              }))
+              break
+            case 'text_delta':
+              set((s) => ({ liveText: s.liveText + event.delta }))
+              break
+            case 'error':
+              set({ currentStatus: `错误: ${event.message}` })
+              break
+            case 'done':
+              set((s) => {
+                const aiMsg: Message = {
+                  role: 'assistant',
+                  content: event.text || s.liveText,
+                  timestamp: Date.now(),
+                }
+                return {
+                  messages: [...s.messages, aiMsg],
+                  liveText: '',
+                  isStreaming: false,
+                  isLoading: false,
+                  currentStatus: `完成，共 ${event.total_turns} 轮`,
+                }
+              })
+              break
+          }
+        },
+        (sessionId) => {
+          if (sessionId && sessionId !== get().sessionId) {
+            localStorage.setItem('session_id', sessionId)
+            set({ sessionId })
+          }
+        },
+        controller.signal,
+      )
+      if (nextSessionId && nextSessionId !== get().sessionId) {
+        localStorage.setItem('session_id', nextSessionId)
+        set({ sessionId: nextSessionId })
+      }
     } catch (e: any) {
       if (e?.name !== 'AbortError') {
         set({ isStreaming: false, isLoading: false, currentStatus: '请求失败' })

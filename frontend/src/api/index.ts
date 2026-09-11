@@ -48,8 +48,9 @@ export const chatApi = {
     message: string,
     sessionId: string | undefined,
     onEvent: (event: StreamEvent) => void,
+    onSession: (sessionId: string) => void,
     signal?: AbortSignal
-  ): Promise<void> => {
+  ): Promise<string> => {
     return fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -58,6 +59,10 @@ export const chatApi = {
     }).then(async (res) => {
       if (!res.ok || !res.body) {
         throw new Error(`Stream请求失败: ${res.status}`)
+      }
+      const responseSessionId = res.headers.get('session-id') || sessionId || ''
+      if (responseSessionId) {
+        onSession(responseSessionId)
       }
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
@@ -84,6 +89,7 @@ export const chatApi = {
           }
         }
       }
+      return responseSessionId
     })
   },
 }

@@ -501,7 +501,7 @@ class ComprehensiveAgent:
                 block, self.handlers,
                 lambda blk, out: trigger_hooks("PostToolUse", blk, out),
             )
-            return f"Background task started: {bg_id}\nCheck results with collect_background_results."
+            return f"Background task started: {bg_id}\nCheck results with list_background_tasks."
 
         # 动态获取 handlers（包含 MCP 工具）
         _, handlers = assemble_tool_pool(self.tools, self.handlers)

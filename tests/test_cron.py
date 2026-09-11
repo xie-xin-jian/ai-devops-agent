@@ -255,3 +255,27 @@ def test_scheduler_skips_disabled_job(monkeypatch):
         cron.cron_scheduler_loop()
 
     assert cron._cron_execution_queue.qsize() == 0
+
+
+def test_cron_weekday_uses_standard_sunday_zero_mapping():
+    """Cron 1 应匹配周一，0 和 7 都应匹配周日。"""
+    monday = datetime(2026, 9, 14, 9, 0)
+    tuesday = datetime(2026, 9, 15, 9, 0)
+    sunday = datetime(2026, 9, 13, 9, 0)
+
+    assert cron.cron_matches("0 9 * * 1", monday) is True
+    assert cron.cron_matches("0 9 * * 1", tuesday) is False
+    assert cron.cron_matches("0 9 * * 0", sunday) is True
+    assert cron.cron_matches("0 9 * * 7", sunday) is True
+    assert cron.validate_cron("0 9 * * 7") is True
+
+
+def test_cron_day_and_weekday_use_or_when_both_restricted():
+    """日期和星期同时受限时应满足任意一个即可。"""
+    monday_the_14th = datetime(2026, 9, 14, 9, 0)
+    tuesday_the_15th = datetime(2026, 9, 15, 9, 0)
+    wednesday_the_16th = datetime(2026, 9, 16, 9, 0)
+
+    assert cron.cron_matches("0 9 15 * 1", monday_the_14th) is True
+    assert cron.cron_matches("0 9 15 * 1", tuesday_the_15th) is True
+    assert cron.cron_matches("0 9 15 * 1", wednesday_the_16th) is False

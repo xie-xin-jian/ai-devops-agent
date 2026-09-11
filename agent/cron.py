@@ -7,6 +7,7 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Optional
 from agent.config import DURABLE_CRON_PATH, WORKDIR
+from agent.storage import atomic_write_json
 
 
 @dataclass
@@ -23,7 +24,7 @@ class CronJob:
 
 
 scheduled_jobs: dict[str, CronJob] = {}
-cron_lock = threading.Lock()
+cron_lock = threading.RLock()
 _last_fired: dict[str, datetime] = {}
 
 # 后台执行用：防止同一个 job_id 在排队或运行期间被重复触发。
@@ -80,16 +81,19 @@ def cron_matches(cron_expr: str, dt: datetime) -> bool:
         return False
     if not _cron_field_matches(hour, dt.hour):
         return False
-    if not _cron_field_matches(day, dt.day):
-        return False
     if not _cron_field_matches(month, dt.month):
         return False
 
-    weekday_value = dt.weekday()
-    if _cron_field_matches(weekday, weekday_value):
-        return True
+    day_matches = _cron_field_matches(day, dt.day)
+    cron_weekday = (dt.weekday() + 1) % 7
+    weekday_matches = _cron_field_matches(weekday, cron_weekday)
+    if cron_weekday == 0:
+        weekday_matches = weekday_matches or _cron_field_matches(weekday, 7)
 
-    return False
+    # Standard cron uses OR when both day-of-month and day-of-week are restricted.
+    if day == "*" or weekday == "*":
+        return day_matches and weekday_matches
+    return day_matches or weekday_matches
 
 
 def _validate_cron_field(field: str, min_val: int, max_val: int) -> bool:
@@ -144,42 +148,45 @@ def validate_cron(cron_expr: str) -> bool:
         return False
     if not _validate_cron_field(month, 1, 12):
         return False
-    if not _validate_cron_field(weekday, 0, 6):
+    if not _validate_cron_field(weekday, 0, 7):
         return False
 
     return True
 
 
 def save_durable_jobs():
-    durable = {jid: job for jid, job in scheduled_jobs.items() if job.durable}
-    data = {jid: asdict(job) for jid, job in durable.items()}
     try:
-        DURABLE_CRON_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(DURABLE_CRON_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with cron_lock:
+            durable = {
+                jid: asdict(job)
+                for jid, job in scheduled_jobs.items()
+                if job.durable
+            }
+            atomic_write_json(DURABLE_CRON_PATH, durable)
     except Exception:
         pass
 
 
 def load_durable_jobs():
     try:
-        if not DURABLE_CRON_PATH.exists():
-            return
-        with open(DURABLE_CRON_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        for jid, job_data in data.items():
-            job = CronJob(
-                id=job_data.get("id", jid),
-                cron=job_data["cron"],
-                prompt=job_data["prompt"],
-                recurring=job_data.get("recurring", True),
-                durable=job_data.get("durable", True),
-                name=job_data.get("name", ""),
-                description=job_data.get("description", ""),
-                enabled=job_data.get("enabled", True),
-                created_at=job_data.get("created_at", time.time()),
-            )
-            scheduled_jobs[jid] = job
+        with cron_lock:
+            if not DURABLE_CRON_PATH.exists():
+                return
+            with open(DURABLE_CRON_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for jid, job_data in data.items():
+                job = CronJob(
+                    id=job_data.get("id", jid),
+                    cron=job_data["cron"],
+                    prompt=job_data["prompt"],
+                    recurring=job_data.get("recurring", True),
+                    durable=job_data.get("durable", True),
+                    name=job_data.get("name", ""),
+                    description=job_data.get("description", ""),
+                    enabled=job_data.get("enabled", True),
+                    created_at=job_data.get("created_at", time.time()),
+                )
+                scheduled_jobs[jid] = job
     except Exception:
         pass
 
@@ -255,8 +262,7 @@ def _save_cron_run_log(job: CronJob, fired_at: datetime, output: str, error: Opt
             "output": output,
             "error": error,
         }
-        with open(log_path, "w", encoding="utf-8") as f:
-            json.dump(log, f, ensure_ascii=False, indent=2)
+        atomic_write_json(log_path, log)
     except Exception:
         pass
 
