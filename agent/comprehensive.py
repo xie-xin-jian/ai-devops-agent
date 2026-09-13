@@ -93,6 +93,7 @@ class ComprehensiveAgent:
         self.memory = MemorySystem()
         self._last_user_query = ""
         self.messages: list = []
+        self._pending_compaction = False
         self._register_default_hooks()
         self._register_default_tools()
         self.system_prompt = system_prompt or self._build_system_prompt()
@@ -327,9 +328,8 @@ class ComprehensiveAgent:
         self.tools.append(schema)
 
         def _compact():
-            summarized = compact_history(self.messages, self.client, self.recovery.current_model)
-            self.messages = summarized
-            return "History compacted. Conversation continued from summary."
+            self._pending_compaction = True
+            return "History compaction scheduled for the next safe boundary."
 
         self.handlers["compact"] = _compact
 
@@ -702,6 +702,14 @@ class ComprehensiveAgent:
 
             self.messages.append({"role": "user", "content": results})
 
+            if self._pending_compaction:
+                self.messages = compact_history(
+                    self.messages,
+                    self.client,
+                    self.recovery.current_model,
+                )
+                self._pending_compaction = False
+
         trigger_hooks("Stop", self.messages)
 
         # 如果循环结束但没拿到 final_text，从后往前找
@@ -720,6 +728,7 @@ class ComprehensiveAgent:
 
     def reset(self):
         self.messages = []
+        self._pending_compaction = False
         self.recovery = RecoveryState()
 
 
