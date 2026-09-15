@@ -13,6 +13,12 @@ build/
 .vscode/
 .trae/
 *.log
+/disk_logs/
+/output/
+/tmp/
+/.mailboxes/
+/logs/
+.pytest-*/
 
 # 运行时生成的数据
 .tasks/

@@ -1,8 +1,10 @@
 import logging
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
-_LOG_FILE = Path.cwd() / "app.log"
+from agent.config import LOG_DIR
+
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+_LOG_FILE = LOG_DIR / "app.log"
 
 
 def _build_logger() -> logging.Logger:

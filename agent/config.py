@@ -11,6 +11,9 @@ if os.getenv("ANTHROPIC_BASE_URL"):
     os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 
 WORKDIR = Path.cwd()
+DATA_DIR = Path(os.environ.get("DATA_DIR", str(WORKDIR))).expanduser()
+if not DATA_DIR.is_absolute():
+    DATA_DIR = (WORKDIR / DATA_DIR).resolve()
 
 MODEL_ID = os.environ.get("MODEL_ID", "claude-3-5-sonnet-20240620")
 PRIMARY_MODEL = MODEL_ID
@@ -28,10 +31,13 @@ ENABLE_UNSAFE_MCP_SHELL = os.environ.get(
 ).strip().lower() in {"1", "true", "yes", "on"}
 
 SKILLS_DIR = WORKDIR / "skills"
-TRANSCRIPT_DIR = WORKDIR / ".transcripts"
-TOOL_RESULTS_DIR = WORKDIR / ".task_outputs" / "tool-results"
-TASKS_DIR = WORKDIR / ".tasks"
-DURABLE_CRON_PATH = WORKDIR / ".scheduled_tasks.json"
+TRANSCRIPT_DIR = DATA_DIR / ".transcripts"
+TOOL_RESULTS_DIR = DATA_DIR / ".task_outputs" / "tool-results"
+TASKS_DIR = DATA_DIR / ".tasks"
+DURABLE_CRON_PATH = DATA_DIR / ".scheduled_tasks.json"
+MEMORY_DIR = DATA_DIR / ".memory"
+CRON_LOG_DIR = DATA_DIR / ".cron_logs"
+LOG_DIR = DATA_DIR / "logs"
 
 DEFAULT_MAX_TOKENS = 8000
 ESCALATED_MAX_TOKENS = 16000

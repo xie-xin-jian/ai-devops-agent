@@ -2,11 +2,10 @@ import json
 import time
 import threading
 from pathlib import Path
-from agent.config import WORKDIR
+from agent.config import MEMORY_DIR
 from agent.storage import atomic_write_text
 
-MEMORY_DIR = WORKDIR / ".memory"
-MEMORY_DIR.mkdir(exist_ok=True)
+MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 _memory_lock = threading.RLock()
 
 

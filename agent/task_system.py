@@ -7,7 +7,7 @@ from pathlib import Path
 from agent.config import TASKS_DIR
 from agent.storage import atomic_write_json
 
-TASKS_DIR.mkdir(exist_ok=True)
+TASKS_DIR.mkdir(parents=True, exist_ok=True)
 VALID_PRIORITIES = {"low", "medium", "high"}
 _tasks_lock = threading.RLock()
 

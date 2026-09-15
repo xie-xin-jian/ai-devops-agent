@@ -6,7 +6,7 @@ import queue
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Optional
-from agent.config import DURABLE_CRON_PATH, WORKDIR
+from agent.config import CRON_LOG_DIR, DURABLE_CRON_PATH
 from agent.storage import atomic_write_json
 
 
@@ -35,9 +35,6 @@ _pending_lock = threading.Lock()
 _cron_execution_queue: queue.Queue[tuple[CronJob, datetime]] = queue.Queue()
 _cron_worker_thread: Optional[threading.Thread] = None
 _cron_worker_lock = threading.Lock()
-
-CRON_LOG_DIR = WORKDIR / ".cron_logs"
-
 
 def _cron_field_matches(field: str, value: int) -> bool:
     if field == "*":
