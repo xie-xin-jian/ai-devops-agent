@@ -22,6 +22,10 @@ API_KEY = (
     or os.environ.get("DEEPSEEK_API_KEY")
     or ""
 )
+API_AUTH_TOKEN = os.environ.get("API_AUTH_TOKEN", "").strip()
+ENABLE_UNSAFE_MCP_SHELL = os.environ.get(
+    "ENABLE_UNSAFE_MCP_SHELL", ""
+).strip().lower() in {"1", "true", "yes", "on"}
 
 SKILLS_DIR = WORKDIR / "skills"
 TRANSCRIPT_DIR = WORKDIR / ".transcripts"

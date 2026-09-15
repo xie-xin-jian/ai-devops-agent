@@ -10,6 +10,8 @@ MCP (Model Context Protocol) 系统。
 import re
 from typing import Callable
 
+from agent.config import ENABLE_UNSAFE_MCP_SHELL
+
 
 class MCPClient:
     """发现并调用 MCP 服务器上的工具。"""
@@ -279,6 +281,11 @@ def _build_handler(tool_def: dict):
     if handler_type == "http":
         return _make_http_handler(tool_name, handler_config)
     if handler_type == "shell":
+        if not ENABLE_UNSAFE_MCP_SHELL:
+            return lambda **kwargs: (
+                f"[shell:{tool_name}] error: disabled; "
+                "set ENABLE_UNSAFE_MCP_SHELL=1 only in a trusted local environment"
+            )
         return _make_shell_handler(tool_name, handler_config)
     return _make_echo_handler(tool_name)
 
@@ -330,6 +337,14 @@ def register_custom_server(name: str, description: str, tools: list[dict]) -> st
         return f"Cannot override builtin server '{name}'"
     if not tools:
         return "No tools provided"
+    if (
+        not ENABLE_UNSAFE_MCP_SHELL
+        and any(tool.get("handler_type") == "shell" for tool in tools)
+    ):
+        return (
+            "Cannot register shell MCP tools while "
+            "ENABLE_UNSAFE_MCP_SHELL is disabled"
+        )
     servers = _load_custom_servers()
     servers[name] = {"description": description, "tools": tools}
     _save_custom_servers(servers)

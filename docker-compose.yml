@@ -9,6 +9,9 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - MODEL_ID=${MODEL_ID}
       - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}
+      - API_AUTH_TOKEN=${API_AUTH_TOKEN}
+      - ENABLE_UNSAFE_MCP_SHELL=${ENABLE_UNSAFE_MCP_SHELL:-0}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:8000,http://127.0.0.1:5173,http://127.0.0.1:8000}
     volumes:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock

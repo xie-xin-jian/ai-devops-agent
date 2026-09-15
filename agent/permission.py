@@ -35,6 +35,7 @@ def permission_hook(block):
 
     if name == "bash":
         command = tool_input.get("command", "") if isinstance(tool_input, dict) else getattr(tool_input, "command", "")
+        cwd = tool_input.get("cwd") if isinstance(tool_input, dict) else getattr(tool_input, "cwd", None)
         for pattern in DENY_LIST:
             if pattern in command:
                 return f"Permission denied: '{pattern}' is on the deny list"
@@ -44,6 +45,11 @@ def permission_hook(block):
                     return "Permission denied by user"
             else:
                 return f"Permission required: destructive command needs approval: {command}"
+        if cwd:
+            try:
+                safe_path(cwd)
+            except Exception:
+                return f"Permission denied: cwd escapes workspace: {cwd}"
     if name in ("write_file", "edit_file"):
         path = tool_input.get("path", "") if isinstance(tool_input, dict) else getattr(tool_input, "path", "")
         try:

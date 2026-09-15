@@ -1,16 +1,25 @@
 import type { Message, Task, CronJob, CronLog, MCPServer, Tool, HealthStatus, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail } from '../types'
 
 const API_BASE = ''
+const API_TOKEN = import.meta.env.VITE_API_TOKEN || ''
+
+function authHeaders(): Record<string, string> {
+  return API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}
+}
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   let res: Response
   try {
+    const headers = new Headers(options?.headers)
+    if (!headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json')
+    }
+    if (API_TOKEN && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${API_TOKEN}`)
+    }
     res = await fetch(`${API_BASE}${url}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...options?.headers,
-      },
       ...options,
+      headers,
     })
   } catch (e: any) {
     throw new Error('无法连接服务器，请确认后端已启动 (python run.py)')
@@ -53,7 +62,10 @@ export const chatApi = {
   ): Promise<string> => {
     return fetch('/api/chat/stream', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(),
+      },
       body: JSON.stringify({ message, session_id: sessionId }),
       signal,
     }).then(async (res) => {

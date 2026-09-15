@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 
 from agent.comprehensive import ComprehensiveAgent
 from agent.config import WORKDIR, ALLOWED_ORIGINS
+from .auth import BearerAuthMiddleware
 from .schemas import CancelRequest, ChatRequest, SessionRequest
 
 
@@ -33,6 +34,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(BearerAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
