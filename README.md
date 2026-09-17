@@ -15,7 +15,7 @@
 - **上下文压缩**：大结果持久化、微压缩、消息裁剪、摘要压缩和反应式压缩
 - **错误恢复**：429 指数退避、529 模型降级、Prompt 过长恢复和输出 Token 预算扩容
 - **任务系统**：支持 Todo 清单和带 `blockedBy` 依赖关系的持久化任务图
-- **长期记忆**：提供 select、extract、consolidate 接口，使用 JSONL 持久化
+- **长期记忆**：结构化 `MemoryRecord`，支持类型、scope、实体、标签、来源和置信度，提供精确去重、select、extract 和 JSONL 持久化
 - **后台任务**：慢 Bash 命令异步执行，完成后在后续 Agent 轮次注入结果
 - **Cron 调度**：五字段 Cron 解析、持久化任务、单执行器队列和运行日志
 - **Skill 与 SubAgent**：按需加载 Markdown Skill，派生独立上下文执行子任务
@@ -462,6 +462,7 @@ pytest -q
 - Session、取消状态和运行锁保存在进程内存中，重启后丢失
 - 当前 Agent Loop 不支持崩溃后继续执行
 - 任务、记忆和 MCP 连接仍包含进程级全局状态
+- 记忆检索以关键词和元数据排序为主，尚未接入向量语义检索
 - Cron 去重只保证单进程范围，多实例需要分布式租约
 - `cancel_event` 不能抢占正在运行的同步工具
 - Shell 和 MCP 权限是基础 Hook 防护，不是完整 Sandbox

@@ -279,6 +279,28 @@ class ComprehensiveAgent:
                         "content": {"type": "string"},
                         "importance": {"type": "integer", "default": 3},
                         "category": {"type": "string", "default": "general"},
+                        "memory_type": {
+                            "type": "string",
+                            "enum": [
+                                "entity",
+                                "semantic",
+                                "episodic",
+                                "procedural",
+                            ],
+                            "default": "semantic",
+                        },
+                        "entity_type": {"type": "string"},
+                        "entity_key": {"type": "string"},
+                        "entity_value": {"type": "string"},
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "scope": {"type": "string", "default": "global"},
+                        "confidence": {
+                            "type": "number",
+                            "default": 0.8,
+                        },
                     },
                     "required": ["content"],
                 },
@@ -288,16 +310,60 @@ class ComprehensiveAgent:
                 "description": "Search long-term memory for relevant past information.",
                 "input_schema": {
                     "type": "object",
-                    "properties": {"query": {"type": "string"}},
+                    "properties": {
+                        "query": {"type": "string"},
+                        "scope": {"type": "string"},
+                        "memory_type": {
+                            "type": "string",
+                            "enum": [
+                                "entity",
+                                "semantic",
+                                "episodic",
+                                "procedural",
+                            ],
+                        },
+                    },
                     "required": ["query"],
                 },
             },
         ]
+
+        def _add_memory(
+            content,
+            importance=3,
+            category="general",
+            memory_type="semantic",
+            entity_type="",
+            entity_key="",
+            entity_value="",
+            tags=None,
+            scope="global",
+            confidence=0.8,
+        ):
+            memory = self.memory.add(
+                content,
+                importance,
+                category,
+                memory_type=memory_type,
+                entity_type=entity_type,
+                entity_key=entity_key,
+                entity_value=entity_value,
+                tags=tags,
+                scope=scope,
+                confidence=confidence,
+            )
+            return f"Memory saved (id={memory['id']}): {content[:80]}"
+
+        def _search_memory(query, scope=None, memory_type=None):
+            return self.memory.format_relevant(
+                query,
+                scope=scope,
+                memory_type=memory_type,
+            )
+
         handlers = {
-            "add_memory": lambda content, importance=3, category="general": (
-                f"Memory saved (id={self.memory.add(content, importance, category)['id']}): {content[:80]}"
-            ),
-            "search_memory": lambda query: self.memory.format_relevant(query),
+            "add_memory": _add_memory,
+            "search_memory": _search_memory,
         }
         self.tools.extend(tools)
         self.handlers.update(handlers)

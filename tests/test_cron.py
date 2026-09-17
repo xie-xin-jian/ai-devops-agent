@@ -219,14 +219,15 @@ async def test_cron_api_preserves_metadata():
     """Cron API 应返回并保存前端填写的完整字段。"""
     pytest.importorskip("fastapi")
     from api.routes.cron_route import create_cron_job, list_cron_jobs
+    from api.schemas import CronCreateRequest
 
-    response = await create_cron_job({
+    response = await create_cron_job(CronCreateRequest(**{
         "name": "Disk inspection",
         "description": "Runs every morning",
         "cron": "0 9 * * *",
         "prompt": "check disk",
         "enabled": True,
-    })
+    }))
 
     assert response["name"] == "Disk inspection"
     assert response["description"] == "Runs every morning"
