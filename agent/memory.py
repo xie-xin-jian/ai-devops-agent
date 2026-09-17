@@ -15,7 +15,7 @@ MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 _memory_lock = threading.RLock()
 
 VALID_MEMORY_TYPES = {"entity", "semantic", "episodic", "procedural"}
-VALID_STATUSES = {"active", "archived", "candidate"}
+VALID_STATUSES = {"active", "archived", "candidate", "deleted"}
 
 
 def normalize_content(content: str) -> str:
@@ -63,6 +63,33 @@ def _legacy_float(value, default: float, minimum: float, maximum: float) -> floa
     return max(minimum, min(result, maximum))
 
 
+def _validate_importance(value) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("importance must be an integer from 1 to 5") from exc
+    if not 1 <= result <= 5:
+        raise ValueError("importance must be between 1 and 5")
+    return result
+
+
+def _validate_confidence(value) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("confidence must be between 0 and 1") from exc
+    if not 0.0 <= result <= 1.0:
+        raise ValueError("confidence must be between 0 and 1")
+    return result
+
+
+def _validate_memory_type(value: str) -> str:
+    result = str(value or "semantic").strip().lower()
+    if result not in VALID_MEMORY_TYPES:
+        raise ValueError(f"memory_type must be one of {sorted(VALID_MEMORY_TYPES)}")
+    return result
+
+
 @dataclass
 class MemoryRecord:
     id: str
@@ -84,12 +111,15 @@ class MemoryRecord:
     access_count: int = 0
     content_hash: str = ""
     version: int = 1
+    supersedes: list[str] = field(default_factory=list)
+    superseded_by: str = ""
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data["content"] = normalize_content(self.content)
         data["tags"] = _normalize_tags(self.tags)
         data["content_hash"] = self.content_hash or content_hash(self.content)
+        data["supersedes"] = _normalize_tags(self.supersedes)
         return data
 
     @classmethod
@@ -129,6 +159,8 @@ class MemoryRecord:
             access_count=max(0, _legacy_int(data.get("access_count"), 0, 0, 2**31 - 1)),
             content_hash=str(data.get("content_hash") or content_hash(content)),
             version=max(1, _legacy_int(data.get("version"), 1, 1, 2**31 - 1)),
+            supersedes=_normalize_tags(data.get("supersedes")),
+            superseded_by=str(data.get("superseded_by") or "").strip(),
         )
 
 
@@ -182,6 +214,255 @@ class MemorySystem:
         if current_state != self._file_state:
             self._load()
 
+    def _find_memory(self, memory_id: str) -> dict | None:
+        return next(
+            (
+                memory
+                for memory in self.memories
+                if memory.get("id") == memory_id
+            ),
+            None,
+        )
+
+    def _archive_entity_conflicts(
+        self,
+        *,
+        scope: str,
+        entity_type: str,
+        entity_key: str,
+        entity_value: str,
+        memory_type: str,
+        replacement_id: str,
+        now: float,
+    ) -> list[str]:
+        if (
+            memory_type != "entity"
+            or not entity_type
+            or not entity_key
+            or not entity_value
+        ):
+            return []
+
+        superseded_ids = []
+        for memory in self.memories:
+            if memory.get("id") == replacement_id:
+                continue
+            if memory.get("status") != "active":
+                continue
+            if memory.get("memory_type") != "entity":
+                continue
+            if memory.get("scope", "global") != scope:
+                continue
+            if memory.get("entity_type") != entity_type:
+                continue
+            if memory.get("entity_key") != entity_key:
+                continue
+            if memory.get("entity_value") == entity_value:
+                continue
+
+            memory["status"] = "archived"
+            memory["updated_at"] = now
+            memory["version"] = memory.get("version", 1) + 1
+            memory["superseded_by"] = replacement_id
+            superseded_ids.append(memory["id"])
+        return superseded_ids
+
+    def _merge_record(self, target: dict, source: dict, now: float) -> dict:
+        target["importance"] = max(
+            target.get("importance", 3),
+            source.get("importance", 3),
+        )
+        target["confidence"] = max(
+            target.get("confidence", 0.8),
+            source.get("confidence", 0.8),
+        )
+        target["tags"] = _normalize_tags(
+            list(target.get("tags", [])) + list(source.get("tags", []))
+        )
+        target["supersedes"] = _normalize_tags(
+            list(target.get("supersedes", []))
+            + list(source.get("supersedes", []))
+            + [source["id"]]
+        )
+        if target.get("source") == "legacy" and source.get("source"):
+            target["source"] = source["source"]
+        for field_name in ("entity_type", "entity_key", "entity_value"):
+            if not target.get(field_name) and source.get(field_name):
+                target[field_name] = source[field_name]
+
+        target["updated_at"] = now
+        target["version"] = target.get("version", 1) + 1
+        source["status"] = "archived"
+        source["superseded_by"] = target["id"]
+        source["updated_at"] = now
+        source["version"] = source.get("version", 1) + 1
+        self._save()
+        return target
+
+    def get(self, memory_id: str) -> dict | None:
+        with _memory_lock:
+            self._reload_if_changed()
+            memory = self._find_memory(memory_id)
+            return dict(memory) if memory is not None else None
+
+    def update(
+        self,
+        memory_id: str,
+        *,
+        content: str | None = None,
+        importance: int | None = None,
+        category: str | None = None,
+        memory_type: str | None = None,
+        entity_type: str | None = None,
+        entity_key: str | None = None,
+        entity_value: str | None = None,
+        tags: list[str] | str | None = None,
+        scope: str | None = None,
+        confidence: float | None = None,
+    ) -> dict:
+        with _memory_lock:
+            self._reload_if_changed()
+            memory = self._find_memory(memory_id)
+            if memory is None:
+                raise ValueError(f"Memory not found: {memory_id}")
+
+            updated = dict(memory)
+            if content is not None:
+                normalized_content = normalize_content(content)
+                if not normalized_content:
+                    raise ValueError("Memory content cannot be empty")
+                updated["content"] = normalized_content
+                updated["content_hash"] = content_hash(normalized_content)
+            if importance is not None:
+                updated["importance"] = _validate_importance(importance)
+            if confidence is not None:
+                updated["confidence"] = _validate_confidence(confidence)
+            if memory_type is not None:
+                updated["memory_type"] = _validate_memory_type(memory_type)
+            if category is not None:
+                updated["category"] = str(category).strip() or "general"
+            if entity_type is not None:
+                updated["entity_type"] = str(entity_type).strip()
+            if entity_key is not None:
+                updated["entity_key"] = str(entity_key).strip()
+            if entity_value is not None:
+                updated["entity_value"] = str(entity_value).strip()
+            if tags is not None:
+                updated["tags"] = _normalize_tags(tags)
+            if scope is not None:
+                updated["scope"] = str(scope).strip() or "global"
+
+            now = time.time()
+            if memory.get("status") == "active":
+                duplicate = next(
+                    (
+                        candidate
+                        for candidate in self.memories
+                        if candidate.get("id") != memory_id
+                        and candidate.get("status") == "active"
+                        and candidate.get("scope", "global")
+                        == updated.get("scope", "global")
+                        and candidate.get("content_hash")
+                        == updated.get("content_hash")
+                    ),
+                    None,
+                )
+                if duplicate is not None:
+                    return self._merge_record(duplicate, memory, now)
+
+                superseded_ids = self._archive_entity_conflicts(
+                    scope=updated.get("scope", "global"),
+                    entity_type=updated.get("entity_type", ""),
+                    entity_key=updated.get("entity_key", ""),
+                    entity_value=updated.get("entity_value", ""),
+                    memory_type=updated.get("memory_type", "semantic"),
+                    replacement_id=memory_id,
+                    now=now,
+                )
+                if superseded_ids:
+                    updated["supersedes"] = _normalize_tags(
+                        list(updated.get("supersedes", [])) + superseded_ids
+                    )
+
+            updated["updated_at"] = now
+            updated["version"] = updated.get("version", 1) + 1
+            memory.clear()
+            memory.update(updated)
+            self._save()
+            return memory
+
+    def archive(self, memory_id: str) -> dict:
+        with _memory_lock:
+            self._reload_if_changed()
+            memory = self._find_memory(memory_id)
+            if memory is None:
+                raise ValueError(f"Memory not found: {memory_id}")
+            if memory.get("status") != "archived":
+                memory["status"] = "archived"
+                memory["updated_at"] = time.time()
+                memory["version"] = memory.get("version", 1) + 1
+                self._save()
+            return memory
+
+    def delete(self, memory_id: str) -> dict:
+        """Soft-delete a memory while keeping the record for audit/recovery."""
+        with _memory_lock:
+            self._reload_if_changed()
+            memory = self._find_memory(memory_id)
+            if memory is None:
+                raise ValueError(f"Memory not found: {memory_id}")
+            if memory.get("status") != "deleted":
+                memory["status"] = "deleted"
+                memory["updated_at"] = time.time()
+                memory["version"] = memory.get("version", 1) + 1
+                self._save()
+            return memory
+
+    def restore(self, memory_id: str) -> dict:
+        with _memory_lock:
+            self._reload_if_changed()
+            memory = self._find_memory(memory_id)
+            if memory is None:
+                raise ValueError(f"Memory not found: {memory_id}")
+
+            duplicate = next(
+                (
+                    candidate
+                    for candidate in self.memories
+                    if candidate.get("id") != memory_id
+                    and candidate.get("status") == "active"
+                    and candidate.get("scope", "global")
+                    == memory.get("scope", "global")
+                    and candidate.get("content_hash")
+                    == memory.get("content_hash")
+                ),
+                None,
+            )
+            if duplicate is not None:
+                now = time.time()
+                return self._merge_record(duplicate, memory, now)
+
+            now = time.time()
+            superseded_ids = self._archive_entity_conflicts(
+                scope=memory.get("scope", "global"),
+                entity_type=memory.get("entity_type", ""),
+                entity_key=memory.get("entity_key", ""),
+                entity_value=memory.get("entity_value", ""),
+                memory_type=memory.get("memory_type", "semantic"),
+                replacement_id=memory_id,
+                now=now,
+            )
+            if superseded_ids:
+                memory["supersedes"] = _normalize_tags(
+                    list(memory.get("supersedes", [])) + superseded_ids
+                )
+            memory["status"] = "active"
+            memory["superseded_by"] = ""
+            memory["updated_at"] = now
+            memory["version"] = memory.get("version", 1) + 1
+            self._save()
+            return memory
+
     def add(
         self,
         content: str,
@@ -202,25 +483,9 @@ class MemorySystem:
         if not normalized_content:
             raise ValueError("Memory content cannot be empty")
 
-        try:
-            importance_value = int(importance)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("importance must be an integer from 1 to 5") from exc
-        if not 1 <= importance_value <= 5:
-            raise ValueError("importance must be between 1 and 5")
-
-        try:
-            confidence_value = float(confidence)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("confidence must be between 0 and 1") from exc
-        if not 0.0 <= confidence_value <= 1.0:
-            raise ValueError("confidence must be between 0 and 1")
-
-        memory_type_value = str(memory_type or "semantic").strip().lower()
-        if memory_type_value not in VALID_MEMORY_TYPES:
-            raise ValueError(
-                f"memory_type must be one of {sorted(VALID_MEMORY_TYPES)}"
-            )
+        importance_value = _validate_importance(importance)
+        confidence_value = _validate_confidence(confidence)
+        memory_type_value = _validate_memory_type(memory_type)
 
         scope_value = str(scope or "global").strip() or "global"
         category_value = str(category or "general").strip() or "general"
@@ -265,6 +530,15 @@ class MemorySystem:
                 return duplicate
 
             now = time.time()
+            superseded_ids = self._archive_entity_conflicts(
+                scope=scope_value,
+                entity_type=str(entity_type or "").strip(),
+                entity_key=str(entity_key or "").strip(),
+                entity_value=str(entity_value or "").strip(),
+                memory_type=memory_type_value,
+                replacement_id="",
+                now=now,
+            )
             record = MemoryRecord(
                 id=f"mem_{uuid.uuid4().hex}",
                 content=normalized_content,
@@ -285,8 +559,13 @@ class MemorySystem:
                 access_count=0,
                 content_hash=digest,
                 version=1,
+                supersedes=superseded_ids,
             )
             memory = record.to_dict()
+            for memory_id in superseded_ids:
+                old_memory = self._find_memory(memory_id)
+                if old_memory is not None:
+                    old_memory["superseded_by"] = record.id
             self.memories.append(memory)
             self._save()
             return memory
@@ -345,7 +624,8 @@ class MemorySystem:
         for index, memory in enumerate(memories, 1):
             lines.append(
                 f"[{index}] "
-                f"({memory.get('memory_type', 'semantic')}, "
+                f"(id={memory.get('id', '')}, "
+                f"{memory.get('memory_type', 'semantic')}, "
                 f"{memory.get('category', 'general')}, "
                 f"importance={memory.get('importance', 3)}) "
                 f"{memory.get('content', '')}"

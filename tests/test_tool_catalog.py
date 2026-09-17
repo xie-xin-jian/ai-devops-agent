@@ -12,6 +12,10 @@ def test_tool_catalog_contains_all_registered_tools():
     assert {
         "add_memory",
         "search_memory",
+        "update_memory",
+        "archive_memory",
+        "delete_memory",
+        "restore_memory",
         "list_cron_logs",
         "list_background_tasks",
         "schedule_cron",

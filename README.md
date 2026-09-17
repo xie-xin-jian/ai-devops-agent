@@ -9,13 +9,13 @@
 ## 核心特性
 
 - **Agent Loop**：最多 50 轮模型调用，支持多轮推理、工具执行和结果回填
-- **内置工具系统**：38 个内置工具，使用 `Schema + Handler` 双注册表
+- **内置工具系统**：42 个内置工具，使用 `Schema + Handler` 双注册表
 - **MCP 动态工具池**：支持内置、自定义、stdio 和 SSE MCP，运行时注入 `mcp__server__tool`
 - **会话级上下文隔离**：每个 Session 拥有独立 Agent、消息历史、恢复状态、运行锁和取消事件
 - **上下文压缩**：大结果持久化、微压缩、消息裁剪、摘要压缩和反应式压缩
 - **错误恢复**：429 指数退避、529 模型降级、Prompt 过长恢复和输出 Token 预算扩容
 - **任务系统**：支持 Todo 清单和带 `blockedBy` 依赖关系的持久化任务图
-- **长期记忆**：结构化 `MemoryRecord`，支持类型、scope、实体、标签、来源和置信度，提供精确去重、select、extract 和 JSONL 持久化
+- **长期记忆**：结构化 `MemoryRecord`，支持类型、scope、实体、标签、来源、置信度和生命周期管理，提供精确去重、软删除与 JSONL 持久化
 - **后台任务**：慢 Bash 命令异步执行，完成后在后续 Agent 轮次注入结果
 - **Cron 调度**：五字段 Cron 解析、持久化任务、单执行器队列和运行日志
 - **Skill 与 SubAgent**：按需加载 Markdown Skill，派生独立上下文执行子任务
@@ -301,7 +301,7 @@ curl -N -X POST http://localhost:8000/api/chat/stream \
 
 当前 `text_delta` 是拿到完整模型响应后按词拆分发送，不是模型原生 Token Streaming。工具调用和状态事件是实时产生的。
 
-## 内置工具（38 个）
+## 内置工具（42 个）
 
 | 类别 | 工具 |
 |---|---|
@@ -313,7 +313,7 @@ curl -N -X POST http://localhost:8000/api/chat/stream \
 | 日志 | `system_logs` |
 | Todo 与任务 | `todo_write` `create_task` `list_tasks` `get_task` `claim_task` `complete_task` |
 | Skill / SubAgent | `list_skills` `load_skill` `spawn_subagent` |
-| 记忆 | `add_memory` `search_memory` |
+| 记忆 | `add_memory` `search_memory` `update_memory` `archive_memory` `delete_memory` `restore_memory` |
 | 上下文 | `compact` |
 | Cron | `schedule_cron` `list_crons` `cancel_cron` `list_cron_logs` |
 | MCP | `connect_mcp` |
@@ -463,6 +463,7 @@ pytest -q
 - 当前 Agent Loop 不支持崩溃后继续执行
 - 任务、记忆和 MCP 连接仍包含进程级全局状态
 - 记忆检索以关键词和元数据排序为主，尚未接入向量语义检索
+- 记忆仅做精确内容去重，语义相近记录仍需后续合并策略
 - Cron 去重只保证单进程范围，多实例需要分布式租约
 - `cancel_event` 不能抢占正在运行的同步工具
 - Shell 和 MCP 权限是基础 Hook 防护，不是完整 Sandbox

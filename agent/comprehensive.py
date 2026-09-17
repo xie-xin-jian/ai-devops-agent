@@ -326,6 +326,68 @@ class ComprehensiveAgent:
                     "required": ["query"],
                 },
             },
+            {
+                "name": "update_memory",
+                "description": "Update a long-term memory by id.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "memory_id": {"type": "string"},
+                        "content": {"type": "string"},
+                        "importance": {"type": "integer"},
+                        "category": {"type": "string"},
+                        "memory_type": {
+                            "type": "string",
+                            "enum": [
+                                "entity",
+                                "semantic",
+                                "episodic",
+                                "procedural",
+                            ],
+                        },
+                        "entity_type": {"type": "string"},
+                        "entity_key": {"type": "string"},
+                        "entity_value": {"type": "string"},
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "scope": {"type": "string"},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["memory_id"],
+                },
+            },
+            {
+                "name": "archive_memory",
+                "description": "Archive a long-term memory without deleting it.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"memory_id": {"type": "string"}},
+                    "required": ["memory_id"],
+                },
+            },
+            {
+                "name": "delete_memory",
+                "description": (
+                    "Soft-delete a long-term memory. The record is retained "
+                    "for audit and can be restored."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"memory_id": {"type": "string"}},
+                    "required": ["memory_id"],
+                },
+            },
+            {
+                "name": "restore_memory",
+                "description": "Restore an archived or deleted memory.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"memory_id": {"type": "string"}},
+                    "required": ["memory_id"],
+                },
+            },
         ]
 
         def _add_memory(
@@ -361,9 +423,53 @@ class ComprehensiveAgent:
                 memory_type=memory_type,
             )
 
+        def _update_memory(
+            memory_id,
+            content=None,
+            importance=None,
+            category=None,
+            memory_type=None,
+            entity_type=None,
+            entity_key=None,
+            entity_value=None,
+            tags=None,
+            scope=None,
+            confidence=None,
+        ):
+            memory = self.memory.update(
+                memory_id,
+                content=content,
+                importance=importance,
+                category=category,
+                memory_type=memory_type,
+                entity_type=entity_type,
+                entity_key=entity_key,
+                entity_value=entity_value,
+                tags=tags,
+                scope=scope,
+                confidence=confidence,
+            )
+            return f"Memory updated: {memory['id']} (version={memory['version']})"
+
+        def _archive_memory(memory_id):
+            memory = self.memory.archive(memory_id)
+            return f"Memory archived: {memory['id']}"
+
+        def _delete_memory(memory_id):
+            memory = self.memory.delete(memory_id)
+            return f"Memory soft-deleted: {memory['id']}"
+
+        def _restore_memory(memory_id):
+            memory = self.memory.restore(memory_id)
+            return f"Memory restored: {memory['id']}"
+
         handlers = {
             "add_memory": _add_memory,
             "search_memory": _search_memory,
+            "update_memory": _update_memory,
+            "archive_memory": _archive_memory,
+            "delete_memory": _delete_memory,
+            "restore_memory": _restore_memory,
         }
         self.tools.extend(tools)
         self.handlers.update(handlers)
