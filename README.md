@@ -9,7 +9,7 @@
 ## 核心特性
 
 - **Agent Loop**：最多 50 轮模型调用，支持多轮推理、工具执行和结果回填
-- **内置工具系统**：38 个内置工具，使用 `Schema + Handler` 双注册表
+- **内置工具系统**：35 个内置工具，使用 `Schema + Handler` 双注册表
 - **MCP 动态工具池**：支持内置、自定义、stdio 和 SSE MCP，运行时注入 `mcp__server__tool`
 - **会话级上下文隔离**：每个 Session 拥有独立 Agent、消息历史、恢复状态、运行锁和取消事件
 - **上下文压缩**：大结果持久化、微压缩、消息裁剪、摘要压缩和反应式压缩
@@ -172,13 +172,7 @@ API 文档：http://localhost:8000/docs
 可视化界面：http://localhost:8000/ui
 ```
 
-当前 `docker-compose.yml` 仍挂载宿主 Docker Socket：
-
-```yaml
-- /var/run/docker.sock:/var/run/docker.sock
-```
-
-这通常等价于较高的宿主机权限。仅应在可信环境使用；生产环境应移除或改用受限 Docker Socket Proxy。
+默认配置不挂载宿主 Docker Socket，也不提供 Docker 运行时检查工具。
 
 ## API 认证
 
@@ -301,7 +295,7 @@ curl -N -X POST http://localhost:8000/api/chat/stream \
 
 当前 `text_delta` 是拿到完整模型响应后按词拆分发送，不是模型原生 Token Streaming。工具调用和状态事件是实时产生的。
 
-## 内置工具（38 个）
+## 内置工具（35 个）
 
 | 类别 | 工具 |
 |---|---|
@@ -309,7 +303,6 @@ curl -N -X POST http://localhost:8000/api/chat/stream \
 | Shell | `bash` |
 | 服务与系统 | `service_status` `system_info` `memory_usage` `cpu_usage` `process_top` `process_search` |
 | 磁盘与网络 | `disk_usage` `disk_io` `network_interfaces` `port_listen` `ping_host` |
-| Docker | `docker_ps` `docker_logs` `docker_stats` |
 | 日志 | `system_logs` |
 | Todo 与任务 | `todo_write` `create_task` `list_tasks` `get_task` `claim_task` `complete_task` |
 | Skill / SubAgent | `list_skills` `load_skill` `spawn_subagent` |
@@ -465,7 +458,6 @@ pytest -q
 - Cron 去重只保证单进程范围，多实例需要分布式租约
 - `cancel_event` 不能抢占正在运行的同步工具
 - Shell 和 MCP 权限是基础 Hook 防护，不是完整 Sandbox
-- Docker Compose 默认挂载 Docker Socket，存在宿主机高权限风险
 - `VITE_API_TOKEN` 会进入浏览器产物，不适合公网多用户认证
 - 上下文按字符近似计算，不是精确 Token 计数
 

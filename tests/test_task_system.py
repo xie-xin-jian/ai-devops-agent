@@ -148,12 +148,13 @@ async def test_task_api_preserves_priority(isolated_tasks_dir):
     """任务 API 应将前端 priority 写入持久化数据。"""
     pytest.importorskip("fastapi")
     from api.routes.task import create_new_task
+    from api.schemas import TaskCreateRequest
 
-    response = await create_new_task({
+    response = await create_new_task(TaskCreateRequest(**{
         "subject": "High priority task",
         "description": "details",
         "priority": "high",
-    })
+    }))
 
     assert response["priority"] == "high"
     assert response["created_at"] > 0
