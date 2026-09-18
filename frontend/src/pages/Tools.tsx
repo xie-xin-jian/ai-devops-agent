@@ -26,7 +26,7 @@ function categorize(name: string): string {
     if (tools.includes(name)) return cat
   }
   if (name.startsWith('mcp__')) return 'MCP'
-  if (['service_status', 'disk_usage', 'docker_ps'].includes(name)) return '运维工具'
+  if (['service_status', 'disk_usage'].includes(name)) return '运维工具'
   return '其他'
 }
 

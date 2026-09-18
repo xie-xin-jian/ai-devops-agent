@@ -21,3 +21,13 @@ def test_tool_catalog_contains_all_registered_tools():
         "schedule_cron",
         "spawn_subagent",
     }.issubset(names)
+
+
+def test_docker_tools_are_not_registered():
+    names = {
+        tool["name"]
+        for tool in comprehensive.ComprehensiveAgent.get_tool_catalog()
+    }
+
+    assert names.isdisjoint({"docker_ps", "docker_logs", "docker_stats"})
+    assert len(names) == 39

@@ -20,7 +20,6 @@ from .shell import (
 from .ops import (
     run_service_status,
     run_disk_usage,
-    run_docker_ps,
     run_system_info,
     run_memory_usage,
     run_cpu_usage,
@@ -31,8 +30,6 @@ from .ops import (
     run_ping_host,
     run_disk_io,
     run_system_logs,
-    run_docker_logs,
-    run_docker_stats,
     OPS_TOOL_SCHEMAS,
     OPS_TOOL_HANDLERS,
 )
@@ -54,7 +51,6 @@ __all__ = [
     "run_bash",
     "run_service_status",
     "run_disk_usage",
-    "run_docker_ps",
     "run_system_info",
     "run_memory_usage",
     "run_cpu_usage",
@@ -65,8 +61,6 @@ __all__ = [
     "run_ping_host",
     "run_disk_io",
     "run_system_logs",
-    "run_docker_logs",
-    "run_docker_stats",
     "READ_FILE_SCHEMA",
     "WRITE_FILE_SCHEMA",
     "EDIT_FILE_SCHEMA",
