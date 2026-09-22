@@ -80,7 +80,7 @@ def test_recover_context_overflow_reports_reduction(monkeypatch):
         lambda messages, client, model: compacted,
     )
 
-    result, stats = context_compact.recover_context_overflow(
+    result, stats = error_recovery.recover_context_overflow(
         original,
         client=object(),
         model="test-model",
@@ -117,7 +117,7 @@ def test_recover_context_overflow_falls_back_to_snip(monkeypatch):
         lambda messages: snipped,
     )
 
-    result, stats = context_compact.recover_context_overflow(
+    result, stats = error_recovery.recover_context_overflow(
         original,
         client=object(),
         model="test-model",
