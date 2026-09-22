@@ -9,7 +9,6 @@ class RecoveryState:
         self.has_escalated = False
         self.recovery_count = 0
         self.consecutive_529 = 0
-        self.has_attempted_reactive_compact = False
         self.current_model = PRIMARY_MODEL
         self.current_max_tokens = DEFAULT_MAX_TOKENS
 
@@ -48,6 +47,23 @@ def is_prompt_too_long_error(e: Exception) -> bool:
     return (("prompt" in msg and "long" in msg)
             or "context_length_exceeded" in msg
             or "max_context_window" in msg)
+
+
+def is_output_limit_error(e: Exception) -> bool:
+    """Return whether the provider rejected the requested output length."""
+    msg = str(e).lower()
+    return any(
+        marker in msg
+        for marker in (
+            "max_tokens",
+            "max output",
+            "maximum output",
+            "output token",
+            "output length",
+            "completion token",
+        )
+    )
+
 
 def escalate_tokens(state: RecoveryState) -> bool:
     if state.current_max_tokens < ESCALATED_MAX_TOKENS:

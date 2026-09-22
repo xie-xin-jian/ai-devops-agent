@@ -42,10 +42,11 @@ from .skill import list_skills, load_skill
 from .subagent import spawn_subagent, extract_text, has_tool_use, call_tool_handler
 from .context_compact import (
     estimate_size, tool_result_budget, micro_compact, snip_compact,
-    compact_history, reactive_compact, write_transcript,
+    compact_history, recover_context_overflow, write_transcript,
 )
 from .error_recovery import (
-    RecoveryState, with_retry, is_prompt_too_long_error, escalate_tokens,
+    RecoveryState, with_retry, is_prompt_too_long_error,
+    is_output_limit_error, escalate_tokens,
 )
 from .task_system import (
     create_task, list_tasks, load_task, claim_task, complete_task,
@@ -763,6 +764,8 @@ class ComprehensiveAgent:
         max_turns = 50
         final_text = ""
         last_assistant_text = ""
+        context_recovery_attempts = 0
+        max_context_recovery_attempts = 2
 
         for turn in range(max_turns):
             if self._is_cancelled(cancel_event):
@@ -780,21 +783,72 @@ class ComprehensiveAgent:
                 response = self._call_api(self.messages)
             except Exception as e:
                 if is_prompt_too_long_error(e):
-                    if not self.recovery.has_attempted_reactive_compact:
-                        self.recovery.has_attempted_reactive_compact = True
-                        yield {"type": "status", "message": "Prompt 过长，执行反应式压缩...", "turn": turn+1}
-                        logger.warning(f"[turn {turn+1}] Prompt 过长，执行 reactive_compact")
-                        self.messages = reactive_compact(
-                            self.messages, self.client, self.recovery.current_model
+                    if context_recovery_attempts >= max_context_recovery_attempts:
+                        yield {
+                            "type": "error",
+                            "message": "上下文压缩后仍然超过模型限制",
+                        }
+                        return
+
+                    context_recovery_attempts += 1
+                    yield {
+                        "type": "status",
+                        "message": "Prompt 过长，执行上下文恢复压缩...",
+                        "turn": turn + 1,
+                    }
+                    logger.warning(
+                        f"[turn {turn+1}] Prompt 过长，执行 "
+                        "recover_context_overflow"
+                    )
+
+                    try:
+                        compacted, stats = recover_context_overflow(
+                            self.messages,
+                            self.client,
+                            self.recovery.current_model,
+                        )
+                    except Exception as compact_error:
+                        logger.error(
+                            f"[turn {turn+1}] 上下文压缩失败: {compact_error}"
+                        )
+                        yield {
+                            "type": "error",
+                            "message": f"上下文压缩失败: {compact_error}",
+                        }
+                        return
+
+                    self.messages = compacted
+                    logger.info(
+                        f"[turn {turn+1}] context recovery: "
+                        f"{stats['before']} -> {stats['after']} bytes"
+                    )
+                    if not stats["reduced"]:
+                        yield {
+                            "type": "error",
+                            "message": "上下文压缩未有效缩小输入，无法继续调用模型",
+                        }
+                        return
+                    continue
+
+                if is_output_limit_error(e):
+                    if escalate_tokens(self.recovery):
+                        yield {
+                            "type": "status",
+                            "message": (
+                                "输出 Token 上限扩容到 "
+                                f"{self.recovery.current_max_tokens}"
+                            ),
+                            "turn": turn + 1,
+                        }
+                        logger.warning(
+                            f"[turn {turn+1}] 输出 Token 上限扩容到 "
+                            f"{self.recovery.current_max_tokens}"
                         )
                         continue
-                    if escalate_tokens(self.recovery):
-                        yield {"type": "status", "message": f"Token 扩容到 {self.recovery.current_max_tokens}", "turn": turn+1}
-                        logger.warning(f"[turn {turn+1}] Token 扩容到 {self.recovery.current_max_tokens}")
-                        continue
+
                 yield {"type": "error", "message": str(e)}
                 logger.error(f"[turn {turn+1}] API 异常: {e}")
-                raise
+                return
 
             if self._is_cancelled(cancel_event):
                 yield self._cancelled_event()
