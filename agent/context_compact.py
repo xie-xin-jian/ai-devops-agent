@@ -298,32 +298,3 @@ def reactive_compact(messages: list, client, model) -> list:
     compacted_message = {"role": "user", "content": "[Compacted]\n\n" + summary}
 
     return [compacted_message] + tail
-
-
-def recover_context_overflow(
-    messages: list,
-    client,
-    model,
-    context_limit: int = CONTEXT_LIMIT,
-) -> tuple[list, dict]:
-    """Run bounded context recovery and report whether it was effective."""
-    before = estimate_size(messages)
-
-    recovered = tool_result_budget(messages)
-    recovered = micro_compact(recovered)
-    recovered = reactive_compact(recovered, client, model)
-
-    after_reactive = estimate_size(recovered)
-    if after_reactive >= before * 0.9:
-        recovered = snip_compact(recovered)
-
-    after = estimate_size(recovered)
-    stats = {
-        "before": before,
-        "after": after,
-        "after_reactive": after_reactive,
-        "limit": context_limit,
-        "reduced": after < before * 0.9,
-        "within_limit": after <= context_limit,
-    }
-    return recovered, stats

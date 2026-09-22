@@ -1,4 +1,6 @@
 import time, random
+
+from agent import context_compact
 from agent.config import (
     MAX_RETRIES, MAX_CONSECUTIVE_529, BASE_DELAY_MS,
     PRIMARY_MODEL, FALLBACK_MODEL_ID, DEFAULT_MAX_TOKENS, ESCALATED_MAX_TOKENS
@@ -63,6 +65,36 @@ def is_output_limit_error(e: Exception) -> bool:
             "completion token",
         )
     )
+
+
+def recover_context_overflow(
+    messages: list,
+    client,
+    model,
+    context_limit: int | None = None,
+) -> tuple[list, dict]:
+    """Run bounded context recovery and report whether it was effective."""
+    limit = context_compact.CONTEXT_LIMIT if context_limit is None else context_limit
+    before = context_compact.estimate_size(messages)
+
+    recovered = context_compact.tool_result_budget(messages)
+    recovered = context_compact.micro_compact(recovered)
+    recovered = context_compact.reactive_compact(recovered, client, model)
+
+    after_reactive = context_compact.estimate_size(recovered)
+    if after_reactive >= before * 0.9:
+        recovered = context_compact.snip_compact(recovered)
+
+    after = context_compact.estimate_size(recovered)
+    stats = {
+        "before": before,
+        "after": after,
+        "after_reactive": after_reactive,
+        "limit": limit,
+        "reduced": after < before * 0.9,
+        "within_limit": after <= limit,
+    }
+    return recovered, stats
 
 
 def escalate_tokens(state: RecoveryState) -> bool:

@@ -42,11 +42,11 @@ from .skill import list_skills, load_skill
 from .subagent import spawn_subagent, extract_text, has_tool_use, call_tool_handler
 from .context_compact import (
     estimate_size, tool_result_budget, micro_compact, snip_compact,
-    compact_history, recover_context_overflow, write_transcript,
+    compact_history, write_transcript,
 )
 from .error_recovery import (
     RecoveryState, with_retry, is_prompt_too_long_error,
-    is_output_limit_error, escalate_tokens,
+    is_output_limit_error, escalate_tokens, recover_context_overflow,
 )
 from .task_system import (
     create_task, list_tasks, load_task, claim_task, complete_task,
