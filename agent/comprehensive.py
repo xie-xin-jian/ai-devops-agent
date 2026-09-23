@@ -33,9 +33,9 @@ from .config import (
     DEFAULT_MAX_TOKENS, CONTEXT_LIMIT, CONTINUATION_PROMPT,
     CLI_ACTIVE,
 )
-from .hooks import HOOKS, register_hook, trigger_hooks
+from .hooks import register_hook, trigger_hooks
 from .permission import permission_hook
-from .todo import todo_write, CURRENT_TODOS
+from .todo import todo_write
 from .tools import ALL_TOOL_SCHEMAS, ALL_TOOL_HANDLERS
 
 from .skill import list_skills, load_skill
@@ -104,27 +104,6 @@ class ComprehensiveAgent:
 
     def _register_default_hooks(self):
         register_hook("PreToolUse", permission_hook)
-
-        def log_hook(block):
-            name = getattr(block, "name", None) or (block.get("name") if isinstance(block, dict) else None)
-            return None
-
-        register_hook("PreToolUse", log_hook)
-
-        def large_output_hook(block, output):
-            return None
-
-        register_hook("PostToolUse", large_output_hook)
-
-        def stop_hook(messages):
-            return None
-
-        register_hook("Stop", stop_hook)
-
-        def user_prompt_hook(query):
-            return None
-
-        register_hook("UserPromptSubmit", user_prompt_hook)
 
     def _register_default_tools(self):
         self.tools = list(ALL_TOOL_SCHEMAS)
