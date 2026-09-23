@@ -56,10 +56,7 @@ from .background import (
     should_run_background, start_background_task, collect_background_results,
     list_background_tasks,
 )
-from .cron import (
-    schedule_job, cancel_job, cron_scheduler_loop,
-    load_durable_jobs,
-)
+from .cron import schedule_job, cancel_job
 from .memory import MemorySystem
 from .mcp import (
     connect_mcp, disconnect_mcp, assemble_tool_pool, list_connected_mcp,
@@ -80,7 +77,7 @@ class ComprehensiveAgent:
         catalog._register_default_tools()
         return list(catalog.tools)
 
-    def __init__(self, system_prompt: str = None, enable_cron: bool = False, api_key: str = None):
+    def __init__(self, system_prompt: str = None, api_key: str = None):
         base_url = ANTHROPIC_BASE_URL if ANTHROPIC_BASE_URL else None
         key = api_key or API_KEY
         if not key:
@@ -98,9 +95,6 @@ class ComprehensiveAgent:
         self._register_default_hooks()
         self._register_default_tools()
         self.system_prompt = system_prompt or self._build_system_prompt()
-        self._cron_thread = None
-        if enable_cron:
-            self._start_cron()
 
     def _register_default_hooks(self):
         register_hook("PreToolUse", permission_hook)
@@ -464,11 +458,6 @@ class ComprehensiveAgent:
             sections.append("MCP tools are prefixed mcp__{server}__{tool}.")
         return "\n\n".join(sections)
 
-    def _start_cron(self):
-        load_durable_jobs()
-        self._cron_thread = threading.Thread(target=cron_scheduler_loop, daemon=True)
-        self._cron_thread.start()
-
     def _call_api(self, messages: list):
         # 动态合并 MCP 工具：每次调用 API 前把已连接的 MCP 服务器工具合并进来
         tools, _ = assemble_tool_pool(self.tools, self.handlers)
@@ -767,5 +756,4 @@ class ComprehensiveAgent:
 
 def create_devops_agent() -> ComprehensiveAgent:
     """创建一个 DevOps 场景的 Agent 实例。"""
-    agent = ComprehensiveAgent(enable_cron=False)
-    return agent
+    return ComprehensiveAgent()
