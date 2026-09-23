@@ -39,6 +39,16 @@ MEMORY_DIR = DATA_DIR / ".memory"
 CRON_LOG_DIR = DATA_DIR / ".cron_logs"
 LOG_DIR = DATA_DIR / "logs"
 
+try:
+    MEMORY_MIN_SCORE = float(os.environ.get("MEMORY_MIN_SCORE", "0.25"))
+except ValueError:
+    MEMORY_MIN_SCORE = 0.25
+try:
+    MEMORY_TOP_K = max(1, int(os.environ.get("MEMORY_TOP_K", "5")))
+except ValueError:
+    MEMORY_TOP_K = 5
+MEMORY_SCOPE = os.environ.get("MEMORY_SCOPE", "global").strip() or "global"
+
 DEFAULT_MAX_TOKENS = 8000
 ESCALATED_MAX_TOKENS = 16000
 MAX_RETRIES = 3

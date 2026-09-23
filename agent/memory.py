@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import re
 import threading
 import time
@@ -8,7 +9,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from agent.config import MEMORY_DIR
+from agent.config import MEMORY_DIR, MEMORY_MIN_SCORE, MEMORY_TOP_K
 from agent.storage import atomic_write_text
 
 MEMORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -16,6 +17,8 @@ _memory_lock = threading.RLock()
 
 VALID_MEMORY_TYPES = {"entity", "semantic", "episodic", "procedural"}
 VALID_STATUSES = {"active", "archived", "candidate", "deleted"}
+_LATIN_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_.:/-]*")
+_CJK_SEQUENCE_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 
 
 def normalize_content(content: str) -> str:
@@ -27,6 +30,110 @@ def normalize_content(content: str) -> str:
 def content_hash(content: str) -> str:
     normalized = normalize_content(content).lower()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def tokenize_text(text: str) -> set[str]:
+    """Tokenize Latin terms and use CJK character bigrams for matching."""
+    normalized = normalize_content(text).lower()
+    tokens = set(_LATIN_TOKEN_RE.findall(normalized))
+
+    for sequence in _CJK_SEQUENCE_RE.findall(normalized):
+        tokens.add(sequence)
+        if len(sequence) == 1:
+            tokens.add(sequence)
+            continue
+        for index in range(len(sequence) - 1):
+            tokens.add(sequence[index:index + 2])
+
+    return {token for token in tokens if token}
+
+
+def _keyword_score(query: str, query_tokens: set[str], content: str) -> float:
+    if not query_tokens:
+        return 0.0
+
+    content_lower = normalize_content(content).lower()
+    query_lower = normalize_content(query).lower()
+    phrase_match = 1.0 if query_lower and query_lower in content_lower else 0.0
+    content_tokens = tokenize_text(content)
+    overlap = len(query_tokens & content_tokens) / len(query_tokens)
+    return min(1.0, phrase_match * 0.35 + overlap * 0.65)
+
+
+def _metadata_score(
+    query: str,
+    query_tokens: set[str],
+    memory: dict,
+) -> float:
+    query_lower = normalize_content(query).lower()
+    entity_values = {
+        str(memory.get("entity_type", "")).lower(),
+        str(memory.get("entity_key", "")).lower(),
+        str(memory.get("entity_value", "")).lower(),
+    }
+    entity_values.discard("")
+    entity_match = 1.0 if any(
+        value in query_lower or value in query_tokens
+        for value in entity_values
+    ) else 0.0
+
+    tags = {
+        str(tag).lower()
+        for tag in memory.get("tags", [])
+        if str(tag).strip()
+    }
+    tag_match = 1.0 if any(
+        tag in query_lower or tag in query_tokens
+        for tag in tags
+    ) else 0.0
+
+    category = str(memory.get("category", "")).lower()
+    category_match = 1.0 if category and (
+        category in query_lower or category in query_tokens
+    ) else 0.0
+
+    return min(1.0, entity_match * 0.6 + tag_match * 0.3 + category_match * 0.1)
+
+
+def _recency_score(timestamp: float) -> float:
+    if timestamp <= 0:
+        return 0.0
+    age_days = max(0.0, (time.time() - timestamp) / 86400)
+    return max(0.0, min(1.0, 2.718281828 ** (-age_days / 30)))
+
+
+def _access_score(access_count: int) -> float:
+    if access_count <= 0:
+        return 0.0
+    return min(1.0, math.log1p(access_count) / 5)
+
+
+def _memory_score(
+    query: str,
+    query_tokens: set[str],
+    memory: dict,
+) -> tuple[float, float]:
+    lexical = _keyword_score(query, query_tokens, memory.get("content", ""))
+    metadata = _metadata_score(query, query_tokens, memory)
+    if lexical == 0.0 and metadata == 0.0:
+        return 0.0, 0.0
+
+    importance = max(0.0, min(1.0, (memory.get("importance", 3) - 1) / 4))
+    confidence = max(0.0, min(1.0, float(memory.get("confidence", 0.8))))
+    recency = _recency_score(
+        float(memory.get("updated_at") or memory.get("created_at") or 0.0)
+    )
+    access = _access_score(int(memory.get("access_count", 0)))
+
+    score = (
+        lexical * 0.50
+        + metadata * 0.25
+        + importance * 0.10
+        + confidence * 0.05
+        + recency * 0.05
+        + access * 0.05
+    )
+    return score, lexical + metadata
 
 
 def _normalize_tags(tags) -> list[str]:
@@ -573,17 +680,20 @@ class MemorySystem:
     def select(
         self,
         query: str,
-        top_k: int = 5,
+        top_k: int | None = None,
         *,
         scope: str | None = None,
         memory_type: str | None = None,
         status: str = "active",
+        min_score: float | None = None,
     ) -> list[dict]:
         """Select memories with lightweight keyword and metadata scoring."""
         with _memory_lock:
             self._reload_if_changed()
-            query_lower = normalize_content(query).lower()
+            query_tokens = tokenize_text(query)
             scored = []
+            threshold = MEMORY_MIN_SCORE if min_score is None else min_score
+            limit = MEMORY_TOP_K if top_k is None else max(1, top_k)
 
             for memory in self.memories:
                 if status and memory.get("status", "active") != status:
@@ -593,23 +703,12 @@ class MemorySystem:
                 if memory_type and memory.get("memory_type") != memory_type:
                     continue
 
-                score = 0
-                content_lower = str(memory.get("content", "")).lower()
-                for word in query_lower.split():
-                    if word and word in content_lower:
-                        score += 1
-
-                for tag in memory.get("tags", []):
-                    if str(tag).lower() in query_lower:
-                        score += 1
-
-                score += memory.get("importance", 3) * 0.5
-                score += memory.get("access_count", 0) * 0.1
-                if score > 0:
+                score, relevance = _memory_score(query, query_tokens, memory)
+                if relevance > 0 and score >= threshold:
                     scored.append((score, memory))
 
             scored.sort(key=lambda item: item[0], reverse=True)
-            result = [memory for _, memory in scored[:top_k]]
+            result = [memory for _, memory in scored[:limit]]
             now = time.time()
             for memory in result:
                 memory["access_count"] = memory.get("access_count", 0) + 1

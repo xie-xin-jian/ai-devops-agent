@@ -87,6 +87,9 @@ ANTHROPIC_API_KEY=your-api-key
 FALLBACK_MODEL_ID=
 
 DATA_DIR=
+MEMORY_SCOPE=global
+MEMORY_MIN_SCORE=0.25
+MEMORY_TOP_K=5
 API_AUTH_TOKEN=
 ENABLE_UNSAFE_MCP_SHELL=0
 ```
@@ -100,6 +103,9 @@ ENABLE_UNSAFE_MCP_SHELL=0
 | `ANTHROPIC_API_KEY` | 模型 API Key |
 | `FALLBACK_MODEL_ID` | 529 过载时可切换的备用模型 |
 | `DATA_DIR` | 运行时数据目录，留空则放在当前工作目录 |
+| `MEMORY_SCOPE` | 默认长期记忆作用域 |
+| `MEMORY_MIN_SCORE` | 记忆召回最低相关性分数 |
+| `MEMORY_TOP_K` | 每次自动召回的最大记忆数量 |
 | `API_AUTH_TOKEN` | 可选的 API Bearer Token |
 | `ENABLE_UNSAFE_MCP_SHELL` | 是否允许自定义 MCP Shell Handler，默认关闭 |
 | `ALLOWED_ORIGINS` | 逗号分隔的 CORS 来源 |
@@ -455,7 +461,7 @@ pytest -q
 - Session、取消状态和运行锁保存在进程内存中，重启后丢失
 - 当前 Agent Loop 不支持崩溃后继续执行
 - 任务、记忆和 MCP 连接仍包含进程级全局状态
-- 记忆检索以关键词和元数据排序为主，尚未接入向量语义检索
+- 记忆检索以关键词、中文 bigram、标签、实体和元数据排序为主，尚未接入向量语义检索
 - 记忆仅做精确内容去重，语义相近记录仍需后续合并策略
 - Cron 去重只保证单进程范围，多实例需要分布式租约
 - `cancel_event` 不能抢占正在运行的同步工具

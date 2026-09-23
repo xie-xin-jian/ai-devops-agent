@@ -31,7 +31,7 @@ from anthropic import Anthropic
 from .config import (
     WORKDIR, MODEL_ID, ANTHROPIC_BASE_URL, API_KEY,
     DEFAULT_MAX_TOKENS, CONTEXT_LIMIT, CONTINUATION_PROMPT,
-    CLI_ACTIVE,
+    CLI_ACTIVE, MEMORY_SCOPE,
 )
 from .hooks import register_hook, trigger_hooks
 from .permission import permission_hook
@@ -80,7 +80,13 @@ class ComprehensiveAgent:
         catalog._register_default_tools()
         return list(catalog.tools)
 
-    def __init__(self, system_prompt: str = None, enable_cron: bool = False, api_key: str = None):
+    def __init__(
+        self,
+        system_prompt: str = None,
+        enable_cron: bool = False,
+        api_key: str = None,
+        memory_scope: str | None = None,
+    ):
         base_url = ANTHROPIC_BASE_URL if ANTHROPIC_BASE_URL else None
         key = api_key or API_KEY
         if not key:
@@ -92,6 +98,7 @@ class ComprehensiveAgent:
         self.model = MODEL_ID
         self.recovery = RecoveryState()
         self.memory = MemorySystem()
+        self.memory_scope = (memory_scope or MEMORY_SCOPE).strip() or "global"
         self._last_user_query = ""
         self.messages: list = []
         self._pending_compaction = False
@@ -379,7 +386,7 @@ class ComprehensiveAgent:
             entity_key="",
             entity_value="",
             tags=None,
-            scope="global",
+            scope=None,
             confidence=0.8,
         ):
             memory = self.memory.add(
@@ -391,7 +398,7 @@ class ComprehensiveAgent:
                 entity_key=entity_key,
                 entity_value=entity_value,
                 tags=tags,
-                scope=scope,
+                scope=scope or self.memory_scope,
                 confidence=confidence,
             )
             return f"Memory saved (id={memory['id']}): {content[:80]}"
@@ -399,7 +406,7 @@ class ComprehensiveAgent:
         def _search_memory(query, scope=None, memory_type=None):
             return self.memory.format_relevant(
                 query,
-                scope=scope,
+                scope=scope or self.memory_scope,
                 memory_type=memory_type,
             )
 
@@ -627,7 +634,10 @@ class ComprehensiveAgent:
             "Skills catalog:\n" + list_skills() + "\nUse load_skill(name) when a skill is relevant.",
         ]
         if self._last_user_query:
-            memories_text = self.memory.format_relevant(self._last_user_query)
+            memories_text = self.memory.format_relevant(
+                self._last_user_query,
+                scope=self.memory_scope,
+            )
             if not memories_text.startswith("(no relevant"):
                 sections.append("Relevant memories:\n" + memories_text)
         mcp_names = [s["name"] for s in list_connected_mcp()]
