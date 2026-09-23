@@ -401,6 +401,11 @@ class ComprehensiveAgent:
                 scope=scope or self.memory_scope,
                 confidence=confidence,
             )
+            if memory.get("status") == "candidate":
+                return (
+                    f"Memory saved as candidate (id={memory['id']}): "
+                    f"{content[:80]}"
+                )
             return f"Memory saved (id={memory['id']}): {content[:80]}"
 
         def _search_memory(query, scope=None, memory_type=None):

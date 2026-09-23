@@ -7,9 +7,18 @@ import time
 import unicodedata
 import uuid
 from dataclasses import asdict, dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 
-from agent.config import MEMORY_DIR, MEMORY_MIN_SCORE, MEMORY_TOP_K
+from agent.config import (
+    MEMORY_ACCESS_FLUSH_BATCH,
+    MEMORY_ACCESS_FLUSH_INTERVAL_SECONDS,
+    MEMORY_AUTO_MERGE_THRESHOLD,
+    MEMORY_DIR,
+    MEMORY_MIN_SCORE,
+    MEMORY_NEAR_DUP_THRESHOLD,
+    MEMORY_TOP_K,
+)
 from agent.storage import atomic_write_text
 
 MEMORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -46,6 +55,32 @@ def tokenize_text(text: str) -> set[str]:
             tokens.add(sequence[index:index + 2])
 
     return {token for token in tokens if token}
+
+
+def similarity_score(left: str, right: str) -> float:
+    """Estimate lexical similarity without requiring an embedding model."""
+    left_normalized = normalize_content(left).lower()
+    right_normalized = normalize_content(right).lower()
+    if not left_normalized or not right_normalized:
+        return 0.0
+
+    left_tokens = tokenize_text(left_normalized)
+    right_tokens = tokenize_text(right_normalized)
+    union = left_tokens | right_tokens
+    token_similarity = (
+        len(left_tokens & right_tokens) / len(union)
+        if union
+        else 0.0
+    )
+    sequence_similarity = SequenceMatcher(
+        None,
+        left_normalized,
+        right_normalized,
+    ).ratio()
+    return min(
+        1.0,
+        token_similarity * 0.65 + sequence_similarity * 0.35,
+    )
 
 
 def _keyword_score(query: str, query_tokens: set[str], content: str) -> float:
@@ -275,6 +310,9 @@ class MemorySystem:
     def __init__(self):
         self.memories: list[dict] = []
         self._file_state: tuple[int, int] | None = None
+        self._access_deltas: dict[str, int] = {}
+        self._access_last_accessed: dict[str, float] = {}
+        self._last_access_flush = time.time()
         self._load()
 
     def _path(self) -> Path:
@@ -309,6 +347,9 @@ class MemorySystem:
         atomic_write_text(path, content)
         stat = path.stat()
         self._file_state = (stat.st_mtime_ns, stat.st_size)
+        self._access_deltas.clear()
+        self._access_last_accessed.clear()
+        self._last_access_flush = time.time()
 
     def _reload_if_changed(self):
         path = self._path()
@@ -320,6 +361,118 @@ class MemorySystem:
         current_state = (stat.st_mtime_ns, stat.st_size)
         if current_state != self._file_state:
             self._load()
+
+    def find_similar(
+        self,
+        content: str,
+        *,
+        scope: str,
+        memory_type: str | None = None,
+        threshold: float | None = None,
+        limit: int = 5,
+    ) -> list[dict]:
+        threshold_value = (
+            MEMORY_NEAR_DUP_THRESHOLD
+            if threshold is None
+            else threshold
+        )
+        with _memory_lock:
+            self._reload_if_changed()
+            matches = []
+            for memory in self.memories:
+                if memory.get("status", "active") != "active":
+                    continue
+                if memory.get("scope", "global") != scope:
+                    continue
+                if memory_type and memory.get("memory_type") != memory_type:
+                    continue
+
+                similarity = similarity_score(content, memory.get("content", ""))
+                if similarity >= threshold_value:
+                    matches.append({
+                        "memory": dict(memory),
+                        "similarity": similarity,
+                    })
+
+            matches.sort(
+                key=lambda item: item["similarity"],
+                reverse=True,
+            )
+            return matches[:max(1, limit)]
+
+    def _best_near_duplicate(
+        self,
+        content: str,
+        *,
+        scope: str,
+        memory_type: str,
+        entity_type: str,
+        entity_key: str,
+    ) -> tuple[dict | None, float]:
+        best_memory = None
+        best_similarity = 0.0
+        for memory in self.memories:
+            if memory.get("status") != "active":
+                continue
+            if memory.get("scope", "global") != scope:
+                continue
+            if memory.get("memory_type") != memory_type:
+                continue
+            if (
+                entity_type
+                and entity_key
+                and memory.get("entity_type") == entity_type
+                and memory.get("entity_key")
+                and memory.get("entity_key") != entity_key
+            ):
+                continue
+
+            similarity = similarity_score(content, memory.get("content", ""))
+            if similarity > best_similarity:
+                best_memory = memory
+                best_similarity = similarity
+
+        return best_memory, best_similarity
+
+    def flush_access_stats(self, force: bool = False) -> int:
+        """Persist queued access counters in a batch."""
+        with _memory_lock:
+            if not self._access_deltas:
+                return 0
+
+            now = time.time()
+            due = (
+                force
+                or len(self._access_deltas) >= MEMORY_ACCESS_FLUSH_BATCH
+                or now - self._last_access_flush
+                >= MEMORY_ACCESS_FLUSH_INTERVAL_SECONDS
+            )
+            if not due:
+                return 0
+
+            deltas = dict(self._access_deltas)
+            last_accessed = dict(self._access_last_accessed)
+            self._load()
+
+            applied = 0
+            for memory_id, delta in deltas.items():
+                memory = self._find_memory(memory_id)
+                if memory is None:
+                    continue
+                memory["access_count"] = memory.get("access_count", 0) + delta
+                memory["last_accessed_at"] = max(
+                    float(memory.get("last_accessed_at") or 0.0),
+                    float(last_accessed.get(memory_id) or 0.0),
+                )
+                applied += 1
+
+            if applied:
+                self._save()
+            else:
+                self._access_deltas.clear()
+                self._access_last_accessed.clear()
+                self._last_access_flush = now
+            return applied
 
     def _find_memory(self, memory_id: str) -> dict | None:
         return next(
@@ -606,7 +759,7 @@ class MemorySystem:
                 (
                     memory
                     for memory in self.memories
-                    if memory.get("status") == "active"
+                    if memory.get("status") in {"active", "candidate"}
                     and memory.get("scope", "global") == scope_value
                     and memory.get("content_hash") == digest
                 ),
@@ -646,6 +799,13 @@ class MemorySystem:
                 replacement_id="",
                 now=now,
             )
+            near_duplicate, near_similarity = self._best_near_duplicate(
+                normalized_content,
+                scope=scope_value,
+                memory_type=memory_type_value,
+                entity_type=str(entity_type or "").strip(),
+                entity_key=str(entity_key or "").strip(),
+            )
             record = MemoryRecord(
                 id=f"mem_{uuid.uuid4().hex}",
                 content=normalized_content,
@@ -674,6 +834,16 @@ class MemorySystem:
                 if old_memory is not None:
                     old_memory["superseded_by"] = record.id
             self.memories.append(memory)
+            if (
+                near_duplicate is not None
+                and near_similarity >= MEMORY_AUTO_MERGE_THRESHOLD
+            ):
+                return self._merge_record(near_duplicate, memory, now)
+            if (
+                near_duplicate is not None
+                and near_similarity >= MEMORY_NEAR_DUP_THRESHOLD
+            ):
+                memory["status"] = "candidate"
             self._save()
             return memory
 
@@ -713,7 +883,14 @@ class MemorySystem:
             for memory in result:
                 memory["access_count"] = memory.get("access_count", 0) + 1
                 memory["last_accessed_at"] = now
-            return result
+                memory_id = memory["id"]
+                self._access_deltas[memory_id] = (
+                    self._access_deltas.get(memory_id, 0) + 1
+                )
+                self._access_last_accessed[memory_id] = now
+
+        self.flush_access_stats()
+        return result
 
     def extract(self, memories: list[dict]) -> str:
         """Format selected memories for injection into the system prompt."""

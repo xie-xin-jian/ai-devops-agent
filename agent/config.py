@@ -48,6 +48,32 @@ try:
 except ValueError:
     MEMORY_TOP_K = 5
 MEMORY_SCOPE = os.environ.get("MEMORY_SCOPE", "global").strip() or "global"
+try:
+    MEMORY_NEAR_DUP_THRESHOLD = float(
+        os.environ.get("MEMORY_NEAR_DUP_THRESHOLD", "0.85")
+    )
+except ValueError:
+    MEMORY_NEAR_DUP_THRESHOLD = 0.85
+try:
+    MEMORY_AUTO_MERGE_THRESHOLD = float(
+        os.environ.get("MEMORY_AUTO_MERGE_THRESHOLD", "0.95")
+    )
+except ValueError:
+    MEMORY_AUTO_MERGE_THRESHOLD = 0.95
+try:
+    MEMORY_ACCESS_FLUSH_INTERVAL_SECONDS = max(
+        1,
+        int(os.environ.get("MEMORY_ACCESS_FLUSH_INTERVAL_SECONDS", "300")),
+    )
+except ValueError:
+    MEMORY_ACCESS_FLUSH_INTERVAL_SECONDS = 300
+try:
+    MEMORY_ACCESS_FLUSH_BATCH = max(
+        1,
+        int(os.environ.get("MEMORY_ACCESS_FLUSH_BATCH", "20")),
+    )
+except ValueError:
+    MEMORY_ACCESS_FLUSH_BATCH = 20
 
 DEFAULT_MAX_TOKENS = 8000
 ESCALATED_MAX_TOKENS = 16000
