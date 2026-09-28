@@ -30,4 +30,4 @@ def test_docker_tools_are_not_registered():
     }
 
     assert names.isdisjoint({"docker_ps", "docker_logs", "docker_stats"})
-    assert len(names) == 39
+    assert len(names) == 41

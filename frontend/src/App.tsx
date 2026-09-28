@@ -6,6 +6,10 @@ import Cron from './pages/Cron'
 import Tools from './pages/Tools'
 import MCP from './pages/MCP'
 import Skills from './pages/Skills'
+import PendingActions from './pages/PendingActions'
+import Runs from './pages/Runs'
+import Audit from './pages/Audit'
+import Sandboxes from './pages/Sandboxes'
 import { useAppStore } from './store/useAppStore'
 
 function App() {
@@ -15,12 +19,15 @@ function App() {
 
   // 初始化主题
   useEffect(() => {
-    const saved = localStorage.getItem('theme')
-    if (saved === 'light') {
-      document.documentElement.classList.remove('dark')
-      document.documentElement.classList.add('light')
-      useAppStore.setState({ theme: 'light' })
-    }
+    const migrated = localStorage.getItem('theme_version') === '2'
+    const saved = migrated
+      ? (localStorage.getItem('theme') || 'light')
+      : 'light'
+    localStorage.setItem('theme_version', '2')
+    localStorage.setItem('theme', saved)
+    document.documentElement.classList.toggle('dark', saved === 'dark')
+    document.documentElement.classList.toggle('light', saved !== 'dark')
+    useAppStore.setState({ theme: saved === 'dark' ? 'dark' : 'light' })
   }, [])
 
   // 健康检查
@@ -41,6 +48,10 @@ function App() {
     tools: <Tools />,
     mcp: <MCP />,
     skills: <Skills />,
+    actions: <PendingActions />,
+    runs: <Runs />,
+    audit: <Audit />,
+    sandboxes: <Sandboxes />,
   }
 
   return <Layout>{pages[view] || <Chat />}</Layout>

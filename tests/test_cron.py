@@ -56,7 +56,9 @@ def test_execute_uses_fresh_agent_for_each_run(monkeypatch):
     monkeypatch.setattr(
         cron,
         "_save_cron_run_log",
-        lambda job, fired_at, output, error=None: saved_logs.append((output, error)),
+        lambda job, fired_at, output, error=None, **kwargs: (
+            saved_logs.append((output, error))
+        ),
     )
 
     job = cron.CronJob(id="cron_test", cron="* * * * *", prompt="check disk")

@@ -20,6 +20,10 @@ class MCPClient:
         self.name = name
         self.tools: list[dict] = []
         self._handlers: dict[str, Callable] = {}
+        self.owner_id = ""
+        self.session_id = ""
+        self.run_id = ""
+        self.source = "system"
 
     def register(self, tool_defs: list[dict], handlers: dict[str, Callable]):
         self.tools = tool_defs
@@ -37,6 +41,20 @@ class MCPClient:
 
 mcp_clients: dict[str, MCPClient] = {}
 _DISALLOWED_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _set_mcp_context(
+    client: MCPClient,
+    *,
+    owner_id: str = "",
+    session_id: str = "",
+    run_id: str = "",
+    source: str = "mcp",
+) -> None:
+    client.owner_id = str(owner_id or "")
+    client.session_id = str(session_id or "")
+    client.run_id = str(run_id or "")
+    client.source = str(source or "mcp")
 
 
 def normalize_mcp_name(name: str) -> str:
@@ -121,7 +139,14 @@ MOCK_SERVERS: dict[str, Callable[[], MCPClient]] = {
     "alert": _mock_server_alert,
 }
 
-def connect_mcp(name: str) -> str:
+def connect_mcp(
+    name: str,
+    *,
+    owner_id: str = "",
+    session_id: str = "",
+    run_id: str = "",
+    source: str = "mcp",
+) -> str:
     """连接一个 MCP 服务器并发现其工具。"""
     if name in mcp_clients:
         return f"MCP server '{name}' already connected"
@@ -130,6 +155,13 @@ def connect_mcp(name: str) -> str:
         available = ", ".join(MOCK_SERVERS.keys())
         return f"Unknown server '{name}'. Available: {available}"
     mcp_client = factory()
+    _set_mcp_context(
+        mcp_client,
+        owner_id=owner_id,
+        session_id=session_id,
+        run_id=run_id,
+        source=source,
+    )
     mcp_clients[name] = mcp_client
     tool_names = [t["name"] for t in mcp_client.tools]
     return (f"Connected to MCP server '{name}'. "
@@ -150,11 +182,29 @@ def list_connected_mcp() -> list[dict]:
     return result
 
 
-def assemble_tool_pool(builtin_tools: list[dict], builtin_handlers: dict) -> tuple[list[dict], dict]:
+def _mcp_client_visible(client: MCPClient, context: dict | None) -> bool:
+    if not context:
+        return True
+    owner_id = str(context.get("owner_id") or "")
+    session_id = str(context.get("session_id") or "")
+    if client.session_id:
+        return bool(session_id and client.session_id == session_id)
+    if client.owner_id:
+        return bool(owner_id and client.owner_id == owner_id)
+    return True
+
+
+def assemble_tool_pool(
+    builtin_tools: list[dict],
+    builtin_handlers: dict,
+    context: dict | None = None,
+) -> tuple[list[dict], dict]:
     """合并内置工具 + 所有 MCP 工具为一个池。"""
     tools = list(builtin_tools)
     handlers = dict(builtin_handlers)
     for server_name, mcp_client in mcp_clients.items():
+        if not _mcp_client_visible(mcp_client, context):
+            continue
         safe_server = normalize_mcp_name(server_name)
         for tool_def in mcp_client.tools:
             safe_tool = normalize_mcp_name(tool_def["name"])
@@ -169,9 +219,11 @@ def assemble_tool_pool(builtin_tools: list[dict], builtin_handlers: dict) -> tup
     return tools, handlers
 
 
-def get_mcp_tool_names() -> list[str]:
+def get_mcp_tool_names(context: dict | None = None) -> list[str]:
     names = []
     for server_name, mcp_client in mcp_clients.items():
+        if not _mcp_client_visible(mcp_client, context):
+            continue
         safe_server = normalize_mcp_name(server_name)
         for tool_def in mcp_client.tools:
             safe_tool = normalize_mcp_name(tool_def["name"])
@@ -501,8 +553,17 @@ def _make_stdio_handler(server_name: str, tool_name: str):
     return handler
 
 
-def connect_stdio_mcp(name: str, command: str, args: list[str] | None = None,
-                      cwd: str | None = None) -> str:
+def connect_stdio_mcp(
+    name: str,
+    command: str,
+    args: list[str] | None = None,
+    cwd: str | None = None,
+    *,
+    owner_id: str = "",
+    session_id: str = "",
+    run_id: str = "",
+    source: str = "mcp",
+) -> str:
     """通过 stdio 连接一个标准的 MCP 服务器。
 
     Args:
@@ -553,6 +614,13 @@ def connect_stdio_mcp(name: str, command: str, args: list[str] | None = None,
             tool_defs = [_tool_to_schema(t) for t in tools_list]
 
             client = MCPClient(name)
+            _set_mcp_context(
+                client,
+                owner_id=owner_id,
+                session_id=session_id,
+                run_id=run_id,
+                source=source,
+            )
             handlers = {}
             for t in tools_list:
                 handlers[t["name"]] = _make_stdio_handler(name, t["name"])
@@ -714,7 +782,15 @@ def _make_sse_handler(server_name: str, tool_name: str):
     return handler
 
 
-def connect_sse_mcp(name: str, url: str) -> str:
+def connect_sse_mcp(
+    name: str,
+    url: str,
+    *,
+    owner_id: str = "",
+    session_id: str = "",
+    run_id: str = "",
+    source: str = "mcp",
+) -> str:
     """通过 SSE 连接一个远程 MCP 服务器。
 
     Args:
@@ -800,6 +876,13 @@ def connect_sse_mcp(name: str, url: str) -> str:
 
             # 7. 注册工具到工具池
             client = MCPClient(name)
+            _set_mcp_context(
+                client,
+                owner_id=owner_id,
+                session_id=session_id,
+                run_id=run_id,
+                source=source,
+            )
             handlers = {}
             for t in tools_list:
                 handlers[t["name"]] = _make_sse_handler(name, t["name"])

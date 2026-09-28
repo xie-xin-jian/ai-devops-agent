@@ -19,7 +19,7 @@ def test_background_result_hint_uses_registered_tool(monkeypatch):
     monkeypatch.setattr(
         comprehensive,
         "start_background_task",
-        lambda *args: "bg_0001",
+        lambda *args, **kwargs: "bg_0001",
     )
 
     output = agent._handle_tool_call(

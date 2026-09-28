@@ -1,4 +1,15 @@
-import { MessageSquare, ListTodo, Clock, Wrench, Plug, BookOpen } from 'lucide-react'
+import {
+  BookOpen,
+  Box,
+  Clock,
+  GitBranch,
+  ListTodo,
+  MessageSquare,
+  Plug,
+  ScrollText,
+  ShieldCheck,
+  Wrench,
+} from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 
 const navItems = [
@@ -8,6 +19,10 @@ const navItems = [
   { id: 'tools' as const, label: '工具', icon: Wrench },
   { id: 'mcp' as const, label: 'MCP', icon: Plug },
   { id: 'skills' as const, label: '技能', icon: BookOpen },
+  { id: 'actions' as const, label: '审批', icon: ShieldCheck },
+  { id: 'runs' as const, label: 'Runs', icon: GitBranch },
+  { id: 'audit' as const, label: '审计', icon: ScrollText },
+  { id: 'sandboxes' as const, label: 'Sandbox', icon: Box },
 ]
 
 export default function Sidebar() {
@@ -17,7 +32,7 @@ export default function Sidebar() {
     <aside className="flex h-full w-56 flex-col border-r border-border-secondary bg-bg-secondary">
       {/* Logo */}
       <div className="flex h-14 items-center gap-2.5 px-4 border-b border-border-secondary">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-accent-primary to-purple-500 text-white">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-primary text-white">
           <Wrench size={16} />
         </div>
         <div>

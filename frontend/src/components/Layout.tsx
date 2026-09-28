@@ -12,6 +12,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     cron: '定时任务',
     tools: '工具库',
     mcp: 'MCP 管理',
+    actions: '审批中心',
+    runs: 'Run 时间线',
+    audit: '审计事件',
+    sandboxes: 'Sandbox',
   }
 
   return (

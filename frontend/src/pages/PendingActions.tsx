@@ -1,0 +1,197 @@
+import { useEffect, useState } from 'react'
+import {
+  Check,
+  RefreshCw,
+  ShieldAlert,
+  X,
+} from 'lucide-react'
+import { actionApi } from '../api'
+import Badge from '../components/Badge'
+import Button from '../components/Button'
+
+export default function PendingActions() {
+  const [actions, setActions] = useState<any[]>([])
+  const [loading, setLoading] = useState(false)
+  const [busyId, setBusyId] = useState('')
+  const [error, setError] = useState('')
+
+  const load = async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const res = await actionApi.pending()
+      setActions(res.actions || [])
+    } catch (e: any) {
+      setError(e.message || '加载待审批动作失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    load()
+    const timer = setInterval(load, 10000)
+    return () => clearInterval(timer)
+  }, [])
+
+  const decide = async (id: string, decision: 'confirm' | 'cancel') => {
+    setBusyId(id)
+    setError('')
+    try {
+      if (decision === 'confirm') {
+        await actionApi.confirm(id)
+      } else {
+        await actionApi.cancel(id, 'api-user', 'Rejected from UI')
+      }
+      await load()
+    } catch (e: any) {
+      setError(e.message || '审批操作失败')
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  const pendingCount = actions.filter((item) => item.status === 'pending').length
+
+  return (
+    <div className="h-full overflow-y-auto p-6">
+      <div className="mx-auto max-w-6xl">
+        <div className="mb-5 flex items-center justify-between">
+          <div>
+            <p className="text-sm text-text-secondary">
+              共 {actions.length} 条记录 · {pendingCount} 条待审批
+            </p>
+          </div>
+          <Button variant="secondary" onClick={load} disabled={loading}>
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+            刷新
+          </Button>
+        </div>
+
+        {error && (
+          <div className="mb-4 rounded-lg border border-status-error/30 bg-status-error/10 px-4 py-3 text-sm text-status-error">
+            {error}
+          </div>
+        )}
+
+        {actions.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-border-primary py-20 text-center">
+            <ShieldAlert size={36} className="mx-auto mb-3 text-text-tertiary" />
+            <p className="text-text-secondary">当前没有待审批动作</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {actions.map((action) => (
+              <div
+                key={action.id}
+                className="rounded-xl border border-border-primary bg-bg-secondary p-4"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <h3 className="font-medium">{action.title}</h3>
+                      <Badge variant={riskVariant(action.risk_level)}>
+                        {action.risk_level || 'unknown'}
+                      </Badge>
+                      <Badge variant={statusVariant(action.status)}>
+                        {action.status}
+                      </Badge>
+                      <span className="text-xs text-text-tertiary">
+                        {action.action_code}
+                      </span>
+                    </div>
+                    <p className="text-sm text-text-secondary">
+                      {action.summary}
+                    </p>
+
+                    <div className="mt-3 grid gap-3 text-xs md:grid-cols-3">
+                      <Detail label="Run" value={action.run_id || action.session_id} />
+                      <Detail label="Owner" value={action.owner_id || '-'} />
+                      <Detail label="Session" value={action.session_id || '-'} />
+                    </div>
+
+                    {!!action.steps?.length && (
+                      <div className="mt-3">
+                        <div className="mb-1.5 text-xs font-medium text-text-secondary">
+                          执行步骤
+                        </div>
+                        <div className="space-y-1">
+                          {action.steps.map((step: any, index: number) => (
+                            <div
+                              key={`${step.tool}-${index}`}
+                              className="flex gap-2 text-xs text-text-secondary"
+                            >
+                              <span className="w-4 text-text-tertiary">{index + 1}.</span>
+                              <span className="font-mono text-text-primary">{step.tool}</span>
+                              <span>{step.description}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {(action.impact || action.rollback_plan || action.verification) && (
+                      <div className="mt-3 grid gap-2 text-xs md:grid-cols-3">
+                        {action.impact && <Detail label="影响范围" value={action.impact} />}
+                        {action.rollback_plan && <Detail label="回滚方案" value={action.rollback_plan} />}
+                        {action.verification && <Detail label="验证方式" value={action.verification} />}
+                      </div>
+                    )}
+                  </div>
+
+                  {action.status === 'pending' && (
+                    <div className="flex shrink-0 gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => decide(action.id, 'cancel')}
+                        disabled={busyId === action.id}
+                      >
+                        <X size={14} />
+                        拒绝
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={() => decide(action.id, 'confirm')}
+                        disabled={busyId === action.id}
+                      >
+                        <Check size={14} />
+                        批准
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-text-tertiary">{label}</div>
+      <div className="truncate text-text-secondary" title={value}>
+        {value}
+      </div>
+    </div>
+  )
+}
+
+function riskVariant(risk: string): 'success' | 'warning' | 'error' | 'info' | 'default' {
+  if (risk === 'critical') return 'error'
+  if (risk === 'high') return 'error'
+  if (risk === 'medium') return 'warning'
+  if (risk === 'low') return 'info'
+  return 'success'
+}
+
+function statusVariant(status: string): 'success' | 'warning' | 'error' | 'info' | 'default' {
+  if (status === 'confirmed') return 'info'
+  if (status === 'canceled') return 'error'
+  if (status === 'pending') return 'warning'
+  return 'default'
+}

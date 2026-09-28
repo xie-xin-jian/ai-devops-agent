@@ -19,6 +19,15 @@ class CancelRequest(BaseModel):
     session_id: str = Field(min_length=1)
 
 
+class PendingActionConfirmRequest(BaseModel):
+    actor: str = "api-user"
+
+
+class PendingActionCancelRequest(BaseModel):
+    actor: str = "api-user"
+    reason: str = ""
+
+
 class TaskCreateRequest(BaseModel):
     subject: str = Field(min_length=1)
     description: str = ""

@@ -3,7 +3,17 @@ import type { Message, Task, CronJob, MCPServer, Tool, StdioMCPConfig, SseMCPCon
 import type { StreamEvent } from '../api'
 import { chatApi, taskApi, cronApi, mcpApi, systemApi, skillApi } from '../api'
 
-type View = 'chat' | 'tasks' | 'cron' | 'tools' | 'mcp' | 'skills'
+type View =
+  | 'chat'
+  | 'tasks'
+  | 'cron'
+  | 'tools'
+  | 'mcp'
+  | 'skills'
+  | 'actions'
+  | 'runs'
+  | 'audit'
+  | 'sandboxes'
 
 export interface ToolCallRecord {
   turn: number
@@ -12,6 +22,33 @@ export interface ToolCallRecord {
   output?: string
   duration_ms?: number
   status: 'pending' | 'running' | 'done' | 'error'
+}
+
+export interface ChatSession {
+  id: string
+  title: string
+  updatedAt: number
+}
+
+function loadChatSessions(): ChatSession[] {
+  try {
+    const raw = localStorage.getItem('chat_sessions')
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function persistChatSessions(sessions: ChatSession[]) {
+  localStorage.setItem('chat_sessions', JSON.stringify(sessions.slice(0, 50)))
+}
+
+function initialTheme(): 'dark' | 'light' {
+  const migrated = localStorage.getItem('theme_version') === '2'
+  return migrated && localStorage.getItem('theme') === 'dark'
+    ? 'dark'
+    : 'light'
 }
 
 interface AppState {
@@ -24,9 +61,15 @@ interface AppState {
   messages: Message[]
   isLoading: boolean
   sessionId: string
+  chatSessions: ChatSession[]
+  fetchChatSessions: () => Promise<void>
+  activeAction: any | null
   sendMessage: (msg: string) => Promise<void>
   fetchMessages: () => Promise<void>
   resetMessages: () => Promise<void>
+  newChat: () => void
+  switchChat: (sessionId: string) => Promise<void>
+  deleteChat: (sessionId: string) => Promise<void>
 
   // 流式状态（用于执行轨迹面板）
   isStreaming: boolean
@@ -75,13 +118,44 @@ interface AppState {
   clearToast: () => void
 }
 
+function upsertChatSession(
+  sessionId: string,
+  title: string,
+  set: (partial: Partial<AppState>) => void,
+  get: () => AppState,
+) {
+  const cleanTitle = title.replace(/\s+/g, ' ').trim().slice(0, 32) || '新对话'
+  const existing = get().chatSessions.find((item) => item.id === sessionId)
+  const next = [
+    {
+      id: sessionId,
+      title: existing?.title && existing.title !== '新对话'
+        ? existing.title
+        : cleanTitle,
+      updatedAt: Date.now(),
+    },
+    ...get().chatSessions.filter((item) => item.id !== sessionId),
+  ].sort((a, b) => b.updatedAt - a.updatedAt)
+  set({ chatSessions: next })
+  persistChatSessions(next)
+}
+
+function updateSessionTitle(
+  sessionId: string,
+  title: string,
+  set: (partial: Partial<AppState>) => void,
+  get: () => AppState,
+) {
+  upsertChatSession(sessionId, title, set, get)
+}
+
 let toastId = 0
 
 export const useAppStore = create<AppState>((set, get) => ({
   view: 'chat',
   setView: (v) => set({ view: v }),
 
-  theme: 'dark',
+  theme: initialTheme(),
   toggleTheme: () => {
     const next = get().theme === 'dark' ? 'light' : 'dark'
     document.documentElement.classList.toggle('dark', next === 'dark')
@@ -93,6 +167,31 @@ export const useAppStore = create<AppState>((set, get) => ({
   messages: [],
   isLoading: false,
   sessionId: localStorage.getItem('session_id') || '',
+  chatSessions: loadChatSessions(),
+  fetchChatSessions: async () => {
+    try {
+      const res = await chatApi.sessions()
+      const local = get().chatSessions
+      const merged = (res.sessions || []).map((session) => {
+        const existing = local.find((item) => item.id === session.id)
+        return {
+          id: session.id,
+          title: existing?.title || session.title || '新对话',
+          updatedAt: session.updated_at * 1000,
+        }
+      })
+      const serverIds = new Set(merged.map((item) => item.id))
+      const remainingLocal = local.filter((item) => !serverIds.has(item.id))
+      const next = [...merged, ...remainingLocal]
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 50)
+      set({ chatSessions: next })
+      persistChatSessions(next)
+    } catch {
+      // Keep the local session index if server-side discovery is unavailable.
+    }
+  },
+  activeAction: null,
   isStreaming: false,
   currentTurn: 0,
   toolHistory: [],
@@ -107,6 +206,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       const res = await systemApi.messages(sessionId)
       if (!get().isStreaming && get().messages.length === 0) {
         set({ messages: res.messages || [] })
+        const firstUser = (res.messages || []).find((item: Message) => item.role === 'user')
+        if (firstUser?.content) {
+          updateSessionTitle(sessionId, firstUser.content, set, get)
+        }
       }
     } catch {
       // History restoration should not block the chat page from loading.
@@ -124,7 +227,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       liveText: '',
       currentStatus: '准备中...',
       currentTurn: 0,
+      activeAction: null,
     }))
+    if (get().sessionId) {
+      updateSessionTitle(get().sessionId, msg, set, get)
+    }
 
     const controller = new AbortController()
     set({ streamAbortController: controller })
@@ -135,6 +242,26 @@ export const useAppStore = create<AppState>((set, get) => ({
         get().sessionId,
         (event: StreamEvent) => {
           switch (event.type) {
+            case 'action':
+              set({
+                currentStatus: event.action
+                  ? `已选择动作：${event.action.display_name}`
+                  : '已选择执行动作',
+                activeAction: event.action || null,
+              })
+              break
+            case 'pending_action':
+              set({
+                currentStatus: event.pending_action
+                  ? `待审批：${event.pending_action.title}`
+                  : '已生成待审批动作',
+              })
+              break
+            case 'permission_denied':
+              set({
+                currentStatus: event.message || '权限不足',
+              })
+              break
             case 'status':
               set({ currentStatus: event.message || '', currentTurn: event.turn || 0 })
               break
@@ -205,6 +332,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           }
         },
         (sessionId) => {
+          if (sessionId) {
+            upsertChatSession(sessionId, msg, set, get)
+          }
           if (sessionId && sessionId !== get().sessionId) {
             localStorage.setItem('session_id', sessionId)
             set({ sessionId })
@@ -215,6 +345,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (nextSessionId && nextSessionId !== get().sessionId) {
         localStorage.setItem('session_id', nextSessionId)
         set({ sessionId: nextSessionId })
+      }
+      if (nextSessionId) {
+        upsertChatSession(nextSessionId, msg, set, get)
       }
     } catch (e: any) {
       if (e?.name !== 'AbortError') {
@@ -244,6 +377,55 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().showToast('success', '对话已重置')
     } catch (e: any) {
       get().showToast('error', e.message || '重置失败')
+    }
+  },
+
+  newChat: () => {
+    if (get().isStreaming) {
+      get().stopStreaming()
+    }
+    set({
+      sessionId: '',
+      messages: [],
+      liveText: '',
+      currentStatus: '',
+      currentTurn: 0,
+      toolHistory: [],
+      activeAction: null,
+      isStreaming: false,
+      isLoading: false,
+    })
+    localStorage.removeItem('session_id')
+  },
+
+  switchChat: async (sessionId) => {
+    if (!sessionId || sessionId === get().sessionId) return
+    if (get().isStreaming) {
+      get().stopStreaming()
+    }
+    set({
+      sessionId,
+      messages: [],
+      liveText: '',
+      currentStatus: '正在加载会话...',
+      currentTurn: 0,
+      toolHistory: [],
+      activeAction: null,
+    })
+    localStorage.setItem('session_id', sessionId)
+    await get().fetchMessages()
+    set({ currentStatus: '' })
+  },
+
+  deleteChat: async (sessionId) => {
+    systemApi.reset(sessionId).catch(() => {
+      // Local removal still works if the backend session has expired.
+    })
+    const next = get().chatSessions.filter((item) => item.id !== sessionId)
+    set({ chatSessions: next })
+    persistChatSessions(next)
+    if (get().sessionId === sessionId) {
+      get().newChat()
     }
   },
 

@@ -2,6 +2,7 @@
 
 import pytest
 from pydantic import ValidationError
+from fastapi.testclient import TestClient
 
 from api.schemas import ChatRequest, CronCreateRequest, TaskCreateRequest
 
@@ -23,3 +24,21 @@ def test_cron_request_defaults_are_explicit():
     assert request.enabled is True
     assert request.name == ""
     assert request.description == ""
+
+
+def test_chat_stream_reports_missing_api_key_as_503(monkeypatch):
+    from api import main as api_main
+
+    def fail_session(*args, **kwargs):
+        raise ValueError("API Key not found")
+
+    monkeypatch.setattr(api_main, "get_or_create_session", fail_session)
+    client = TestClient(api_main.app)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"message": "hello"},
+    )
+
+    assert response.status_code == 503
+    assert "API Key not found" in response.json()["detail"]

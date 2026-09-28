@@ -1,15 +1,19 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from agent.cron import (
     schedule_job, cancel_job, scheduled_jobs, validate_cron,
     list_cron_run_logs, _last_fired, is_job_pending,
 )
 from api.schemas import CronCreateRequest
+from agent.rbac import CRON_READ, CRON_WRITE, Principal
+from api.auth import require_permissions
 
 router = APIRouter()
 
 
 @router.get("/")
-async def list_cron_jobs():
+async def list_cron_jobs(
+    _principal: Principal = Depends(require_permissions(CRON_READ)),
+):
     # 每个 job 把最近一次执行信息也带上，方便前端展示
     logs_by_job: dict[str, dict] = {}
     for log in list_cron_run_logs(limit=100):
@@ -38,12 +42,19 @@ async def list_cron_jobs():
 
 
 @router.get("/logs")
-async def get_cron_logs(job_id: str = None, limit: int = 20):
+async def get_cron_logs(
+    job_id: str = None,
+    limit: int = 20,
+    _principal: Principal = Depends(require_permissions(CRON_READ)),
+):
     return list_cron_run_logs(job_id=job_id, limit=limit)
 
 
 @router.post("/")
-async def create_cron_job(payload: CronCreateRequest):
+async def create_cron_job(
+    payload: CronCreateRequest,
+    _principal: Principal = Depends(require_permissions(CRON_WRITE)),
+):
     if not validate_cron(payload.cron):
         raise HTTPException(status_code=400, detail="Invalid cron expression")
     job, msg = schedule_job(
@@ -69,7 +80,10 @@ async def create_cron_job(payload: CronCreateRequest):
 
 
 @router.delete("/{job_id}")
-async def delete_cron_job(job_id: str):
+async def delete_cron_job(
+    job_id: str,
+    _principal: Principal = Depends(require_permissions(CRON_WRITE)),
+):
     result = cancel_job(job_id)
     if result.startswith("Job ") and result.endswith("not found"):
         raise HTTPException(status_code=404, detail=result)

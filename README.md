@@ -95,6 +95,17 @@ MEMORY_AUTO_MERGE_THRESHOLD=0.95
 MEMORY_ACCESS_FLUSH_INTERVAL_SECONDS=300
 MEMORY_ACCESS_FLUSH_BATCH=20
 API_AUTH_TOKEN=
+API_AUTH_USER=api-user
+API_AUTH_ROLES=platform-admin
+DOCKER_HOST=
+SANDBOX_ENABLED=1
+SANDBOX_IMAGE=python:3.11-slim
+SANDBOX_TIMEOUT_SECONDS=120
+SANDBOX_MEMORY_LIMIT=512m
+SANDBOX_CPUS=1.0
+SANDBOX_PIDS_LIMIT=128
+SANDBOX_NETWORK_DISABLED=1
+SANDBOX_USER=65534:65534
 ENABLE_UNSAFE_MCP_SHELL=0
 ```
 
@@ -115,6 +126,16 @@ ENABLE_UNSAFE_MCP_SHELL=0
 | `MEMORY_ACCESS_FLUSH_INTERVAL_SECONDS` | 访问统计批量写入间隔 |
 | `MEMORY_ACCESS_FLUSH_BATCH` | 访问统计批量写入条数 |
 | `API_AUTH_TOKEN` | 可选的 API Bearer Token |
+| `API_AUTH_USER` | 当前 API Token 对应的用户 ID |
+| `API_AUTH_ROLES` | 逗号分隔的 RBAC 角色 |
+| `DOCKER_HOST` | 远程 Docker daemon 地址；未配置时默认拒绝沙箱执行 |
+| `SANDBOX_IMAGE` | 每次 Run 使用的沙箱镜像 |
+| `SANDBOX_TIMEOUT_SECONDS` | 单条沙箱命令超时时间 |
+| `SANDBOX_MEMORY_LIMIT` | 沙箱内存限制 |
+| `SANDBOX_CPUS` | 沙箱 CPU 限制 |
+| `SANDBOX_PIDS_LIMIT` | 沙箱最大进程数 |
+| `SANDBOX_NETWORK_DISABLED` | 是否禁用沙箱网络，默认禁用 |
+| `SANDBOX_USER` | 容器内非 root 用户 |
 | `ENABLE_UNSAFE_MCP_SHELL` | 是否允许自定义 MCP Shell Handler，默认关闭 |
 | `ALLOWED_ORIGINS` | 逗号分隔的 CORS 来源 |
 
@@ -127,7 +148,11 @@ ENABLE_UNSAFE_MCP_SHELL=0
 ```text
 DATA_DIR/
 ├── .cron_logs/
+├── .audit/
+├── .background/
 ├── .memory/
+├── .sandboxes/
+├── .runs/
 ├── .tasks/
 ├── .task_outputs/
 ├── .transcripts/
@@ -135,7 +160,11 @@ DATA_DIR/
 └── logs/
 ```
 
-`DATA_DIR` 只决定应用运行数据的默认位置，不是文件系统 Sandbox。
+`DATA_DIR` 只决定应用运行数据的默认位置。Agent 命令执行使用独立的 Docker Sandbox。
+
+`.runs/` 保存每个 Run 的阶段、消息、恢复状态、Sandbox 工作区引用和待审批动作 ID。进程重启后可通过 Run API 查询并恢复未完成的 Run。
+
+Chat、Task、Cron、Background 和 MCP 运行统一记录 `run_id/source/parent_run_id/resource_id`。Background 任务使用独立 Run 和独立 Docker Sandbox，结果保存在 `.background/`。
 
 ### 4. 启动后端
 
@@ -186,7 +215,9 @@ API 文档：http://localhost:8000/docs
 可视化界面：http://localhost:8000/ui
 ```
 
-默认配置不挂载宿主 Docker Socket，也不提供 Docker 运行时检查工具。
+默认配置不挂载宿主 Docker Socket。沙箱执行应通过 `DOCKER_HOST` 连接远程 Docker daemon；未配置时返回错误，不会回退到宿主 Shell。
+
+每个 Agent Run 会创建独立容器和独立工作区，容器使用非 root 用户、只读根文件系统、资源限制和 `no-new-privileges`，Run 结束或取消后自动清理。
 
 ## API 认证
 

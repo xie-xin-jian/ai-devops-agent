@@ -33,7 +33,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 
 // 对话
 export interface StreamEvent {
-  type: 'status' | 'tool_use' | 'tool_result' | 'thinking' | 'text_delta' | 'done' | 'cancelled' | 'error'
+  type: 'status' | 'action' | 'pending_action' | 'permission_denied' | 'tool_use' | 'tool_result' | 'thinking' | 'text_delta' | 'done' | 'cancelled' | 'error'
   message?: string
   turn?: number
   tool?: string
@@ -43,6 +43,26 @@ export interface StreamEvent {
   delta?: string
   text?: string
   total_turns?: number
+  action?: {
+    code: string
+    display_name: string
+    risk_level: string
+    agent_mode: string
+    preflight_required: boolean
+    requires_approval: boolean
+    allowed_tools: string[]
+  }
+  pending_action?: {
+    id: string
+    action_code: string
+    title: string
+    risk_level: string
+    status: string
+    summary: string
+    rollback_plan?: string
+    verification?: string
+  }
+  missing_permissions?: string[]
 }
 
 export const chatApi = {
@@ -70,7 +90,9 @@ export const chatApi = {
       signal,
     }).then(async (res) => {
       if (!res.ok || !res.body) {
-        throw new Error(`Stream请求失败: ${res.status}`)
+        const payload = await res.json().catch(() => null)
+        const detail = payload?.detail || payload?.error
+        throw new Error(detail || `Stream请求失败: ${res.status}`)
       }
       const responseSessionId = res.headers.get('session-id') || sessionId || ''
       if (responseSessionId) {
@@ -104,6 +126,164 @@ export const chatApi = {
       return responseSessionId
     })
   },
+  sessions: () =>
+    request<{
+      sessions: Array<{
+        id: string
+        title: string
+        updated_at: number
+        message_count: number
+      }>
+    }>('/api/chat/sessions'),
+}
+
+export const actionApi = {
+  pending: (sessionId?: string, status?: string) => {
+    const params = new URLSearchParams()
+    if (sessionId) params.set('session_id', sessionId)
+    if (status) params.set('status', status)
+    const query = params.toString()
+    return request<{ actions: any[] }>(
+      `/api/actions/pending${query ? `?${query}` : ''}`
+    )
+  },
+  get: (actionId: string) =>
+    request<any>(`/api/actions/pending/${actionId}`),
+  confirm: (actionId: string, actor = 'api-user') =>
+    request<any>(`/api/actions/pending/${actionId}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ actor }),
+    }),
+  cancel: (actionId: string, actor = 'api-user', reason = '') =>
+    request<any>(`/api/actions/pending/${actionId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ actor, reason }),
+    }),
+}
+
+export const auditApi = {
+  events: (params: {
+    sessionId?: string
+    runId?: string
+    actionId?: string
+    eventType?: string
+    limit?: number
+  } = {}) => {
+    const query = new URLSearchParams()
+    if (params.sessionId) query.set('session_id', params.sessionId)
+    if (params.runId) query.set('run_id', params.runId)
+    if (params.actionId) query.set('action_id', params.actionId)
+    if (params.eventType) query.set('event_type', params.eventType)
+    if (params.limit) query.set('limit', String(params.limit))
+    const suffix = query.toString()
+    return request<{ events: any[] }>(
+      `/api/audit/events${suffix ? `?${suffix}` : ''}`
+    )
+  },
+  timeline: (sessionId: string, limit = 500) => {
+    const query = new URLSearchParams({
+      session_id: sessionId,
+      limit: String(limit),
+    })
+    return request<any>(`/api/audit/timeline?${query.toString()}`)
+  },
+  run: (runId: string) =>
+    request<any>(`/api/audit/runs/${runId}`),
+}
+
+export const rbacApi = {
+  me: () => request<any>('/api/rbac/me'),
+  permissions: () =>
+    request<{ permissions: any[] }>('/api/rbac/permissions'),
+  roles: () => request<{ roles: any[] }>('/api/rbac/roles'),
+}
+
+export const memoryApi = {
+  list: (params: {
+    scope?: string
+    status?: string
+    sessionId?: string
+  } = {}) => {
+    const query = new URLSearchParams()
+    if (params.scope) query.set('scope', params.scope)
+    if (params.status) query.set('status', params.status)
+    if (params.sessionId) query.set('session_id', params.sessionId)
+    const suffix = query.toString()
+    return request<{ memories: any[]; count: number }>(
+      `/api/memory/${suffix ? `?${suffix}` : ''}`
+    )
+  },
+  approve: (memoryId: string, sessionId = '') => {
+    const query = new URLSearchParams()
+    if (sessionId) query.set('session_id', sessionId)
+    const suffix = query.toString()
+    return request<any>(
+      `/api/memory/${memoryId}/approve${suffix ? `?${suffix}` : ''}`,
+      { method: 'POST' }
+    )
+  },
+}
+
+export const runApi = {
+  list: (params: {
+    sessionId?: string
+    status?: string
+  } = {}) => {
+    const query = new URLSearchParams()
+    if (params.sessionId) query.set('session_id', params.sessionId)
+    if (params.status) query.set('status', params.status)
+    const suffix = query.toString()
+    return request<{ runs: any[] }>(
+      `/api/runs/${suffix ? `?${suffix}` : ''}`
+    )
+  },
+  get: (runId: string) =>
+    request<any>(`/api/runs/${runId}`),
+  resumeStream: async (
+    runId: string,
+    onEvent: (event: StreamEvent) => void,
+    signal?: AbortSignal
+  ) => {
+    const res = await fetch(`/api/runs/${runId}/resume/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders(),
+      },
+      signal,
+    })
+    if (!res.ok || !res.body) {
+      throw new Error(`恢复 Run 失败: ${res.status}`)
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop() || ''
+      for (const part of parts) {
+        for (const line of part.split('\n')) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data:')) continue
+          const data = trimmed.slice(5).trim()
+          if (!data || data === '[DONE]') continue
+          try {
+            onEvent(JSON.parse(data))
+          } catch {
+            // Ignore malformed stream events.
+          }
+        }
+      }
+    }
+  },
+}
+
+export const sandboxApi = {
+  list: () =>
+    request<{ active: any[]; checkpointed: any[] }>('/api/sandboxes/'),
 }
 
 // 任务 - 后端返回 {tasks: [...]} 或数组，字段已补全

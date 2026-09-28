@@ -20,6 +20,9 @@ class Task:
     status: str
     owner: str | None
     blockedBy: list[str]
+    run_id: str = ""
+    source: str = "task"
+    metadata: dict = field(default_factory=dict)
     priority: str = "medium"
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -43,6 +46,9 @@ def _task_from_dict(data: dict) -> Task:
         status=data.get("status", "pending"),
         owner=data.get("owner"),
         blockedBy=data.get("blockedBy") or [],
+        run_id=data.get("run_id", ""),
+        source=data.get("source", "task"),
+        metadata=data.get("metadata") or {},
         priority=priority,
         created_at=created_at,
         updated_at=data.get("updated_at") or created_at,
@@ -52,7 +58,10 @@ def _task_from_dict(data: dict) -> Task:
 
 def create_task(subject: str, description: str = "",
                 blockedBy: list[str] | None = None,
-                priority: str = "medium") -> Task:
+                priority: str = "medium",
+                *,
+                source: str = "task",
+                metadata: dict | None = None) -> Task:
     with _tasks_lock:
         if priority not in VALID_PRIORITIES:
             priority = "medium"
@@ -62,6 +71,8 @@ def create_task(subject: str, description: str = "",
             subject=subject, description=description,
             status="pending", owner=None,
             blockedBy=blockedBy or [],
+            source=source,
+            metadata=dict(metadata or {}),
             priority=priority,
             created_at=now,
             updated_at=now,
@@ -104,7 +115,12 @@ def can_start(task_id: str) -> bool:
     return True
 
 
-def claim_task(task_id: str, owner: str = "agent") -> str:
+def claim_task(
+    task_id: str,
+    owner: str = "agent",
+    *,
+    run_id: str = "",
+) -> str:
     with _tasks_lock:
         task = load_task(task_id)
         if task.status != "pending":
@@ -121,6 +137,8 @@ def claim_task(task_id: str, owner: str = "agent") -> str:
             return "Cannot start — " + ", ".join(parts)
         task.owner = owner
         task.status = "in_progress"
+        if run_id:
+            task.run_id = run_id
         save_task(task)
         print(f"  \033[36m[claim] {task.subject} → in_progress\033[0m")
         return f"Claimed {task.id} ({task.subject})"

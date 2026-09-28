@@ -24,6 +24,10 @@ build/
 .tasks/
 .mcp_servers.json
 .memory/
+.audit/
+.sandboxes/
+.runs/
+.background/
 .cron_logs/
 .scheduled_tasks.json
 .transcripts/

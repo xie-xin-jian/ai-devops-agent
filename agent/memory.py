@@ -243,6 +243,9 @@ class MemoryRecord:
     category: str = "general"
     tags: list[str] = field(default_factory=list)
     scope: str = "global"
+    owner_id: str = ""
+    session_id: str = ""
+    run_id: str = ""
     source: str = "agent"
     confidence: float = 0.8
     importance: int = 3
@@ -291,6 +294,9 @@ class MemoryRecord:
             category=str(data.get("category") or "general").strip() or "general",
             tags=_normalize_tags(data.get("tags")),
             scope=str(data.get("scope") or "global").strip() or "global",
+            owner_id=str(data.get("owner_id") or "").strip(),
+            session_id=str(data.get("session_id") or "").strip(),
+            run_id=str(data.get("run_id") or "").strip(),
             source=str(data.get("source") or "legacy").strip() or "legacy",
             confidence=_legacy_float(data.get("confidence"), 0.8, 0.0, 1.0),
             importance=_legacy_int(data.get("importance"), 3, 1, 5),
@@ -723,6 +729,19 @@ class MemorySystem:
             self._save()
             return memory
 
+    def approve(self, memory_id: str) -> dict:
+        """Promote a candidate memory to active after review."""
+        with _memory_lock:
+            self._reload_if_changed()
+            memory = self._find_memory(memory_id)
+            if memory is None:
+                raise ValueError(f"Memory not found: {memory_id}")
+            if memory.get("status") != "candidate":
+                raise ValueError(
+                    f"Memory {memory_id} is not a candidate"
+                )
+            return self.restore(memory_id)
+
     def add(
         self,
         content: str,
@@ -735,6 +754,9 @@ class MemorySystem:
         entity_value: str = "",
         tags: list[str] | str | None = None,
         scope: str = "global",
+        owner_id: str = "",
+        session_id: str = "",
+        run_id: str = "",
         source: str = "agent",
         confidence: float = 0.8,
     ):
@@ -816,6 +838,9 @@ class MemorySystem:
                 category=category_value,
                 tags=_normalize_tags(tags),
                 scope=scope_value,
+                owner_id=str(owner_id or "").strip(),
+                session_id=str(session_id or "").strip(),
+                run_id=str(run_id or "").strip(),
                 source=source_value,
                 confidence=confidence_value,
                 importance=importance_value,
@@ -853,6 +878,7 @@ class MemorySystem:
         top_k: int | None = None,
         *,
         scope: str | None = None,
+        scopes: set[str] | tuple[str, ...] | list[str] | None = None,
         memory_type: str | None = None,
         status: str = "active",
         min_score: float | None = None,
@@ -869,6 +895,8 @@ class MemorySystem:
                 if status and memory.get("status", "active") != status:
                     continue
                 if scope and memory.get("scope", "global") != scope:
+                    continue
+                if scopes and memory.get("scope", "global") not in scopes:
                     continue
                 if memory_type and memory.get("memory_type") != memory_type:
                     continue
@@ -959,12 +987,14 @@ class MemorySystem:
         query: str,
         *,
         scope: str | None = None,
+        scopes: set[str] | tuple[str, ...] | list[str] | None = None,
         memory_type: str | None = None,
     ) -> str:
         """Select and format relevant memories."""
         selected = self.select(
             query,
             scope=scope,
+            scopes=scopes,
             memory_type=memory_type,
         )
         return self.extract(selected)

@@ -67,7 +67,48 @@ def call_tool_handler(handler, args: dict, name: str) -> str:
         return f"Error: {e}"
 
 
-def spawn_subagent(client, model: str, description: str) -> str:
+def spawn_subagent(
+    client,
+    model: str,
+    description: str,
+    *,
+    sandbox_manager=None,
+    run_id: str = "",
+) -> str:
+    handlers = SUB_HANDLERS
+    if sandbox_manager is not None and run_id:
+        handlers = {
+            "bash": lambda command, cwd=None: sandbox_manager.run(
+                run_id,
+                command,
+                cwd=cwd,
+            ),
+            "read_file": lambda path, limit=None, offset=0: (
+                sandbox_manager.read_file(
+                    run_id,
+                    path,
+                    limit=limit,
+                    offset=offset,
+                )
+            ),
+            "write_file": lambda path, content: sandbox_manager.write_file(
+                run_id,
+                path,
+                content,
+            ),
+            "edit_file": lambda path, old_text, new_text: (
+                sandbox_manager.edit_file(
+                    run_id,
+                    path,
+                    old_text,
+                    new_text,
+                )
+            ),
+            "glob": lambda pattern: sandbox_manager.glob(
+                run_id,
+                pattern,
+            ),
+        }
     messages = [{"role": "user", "content": description}]
     for _ in range(30):
         response = client.messages.create(
@@ -84,7 +125,7 @@ def spawn_subagent(client, model: str, description: str) -> str:
             if blocked:
                 output = str(blocked)
             else:
-                handler = SUB_HANDLERS.get(block.name)
+                handler = handlers.get(block.name)
                 output = call_tool_handler(handler, block.input, block.name)
                 trigger_hooks("PostToolUse", block, output)
             results.append({"type": "tool_result",

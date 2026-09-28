@@ -35,6 +35,7 @@ _pending_lock = threading.Lock()
 _cron_execution_queue: queue.Queue[tuple[CronJob, datetime]] = queue.Queue()
 _cron_worker_thread: Optional[threading.Thread] = None
 _cron_worker_lock = threading.Lock()
+_active_cron_context = None
 
 def _cron_field_matches(field: str, value: int) -> bool:
     if field == "*":
@@ -239,11 +240,34 @@ def _create_cron_agent():
     from agent.comprehensive import ComprehensiveAgent
     from agent.mcp import load_all_custom_servers
 
+    run_context = _active_cron_context
+    if run_context is None:
+        from agent.run_context import create_run_context
+        run_context = create_run_context(
+            source="cron",
+            session_id="cron:manual",
+            owner_id="system",
+        )
     load_all_custom_servers()
-    return ComprehensiveAgent()
+    return ComprehensiveAgent(
+        session_id=run_context.session_id,
+        principal=run_context.principal,
+        run_id=run_context.run_id,
+        run_source="cron",
+        resource_id=run_context.resource_id,
+        run_metadata=run_context.metadata,
+    )
 
 
-def _save_cron_run_log(job: CronJob, fired_at: datetime, output: str, error: Optional[str] = None):
+def _save_cron_run_log(
+    job: CronJob,
+    fired_at: datetime,
+    output: str,
+    error: Optional[str] = None,
+    *,
+    run_id: str = "",
+    session_id: str = "",
+):
     """把 Cron 执行结果落盘，方便用户之后查历史。"""
     try:
         CRON_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -258,6 +282,8 @@ def _save_cron_run_log(job: CronJob, fired_at: datetime, output: str, error: Opt
             "success": error is None,
             "output": output,
             "error": error,
+            "run_id": run_id,
+            "session_id": session_id,
         }
         atomic_write_json(log_path, log)
     except Exception:
@@ -286,12 +312,81 @@ def is_job_pending(job_id: str) -> bool:
 
 def _execute_cron_job_sync(job: CronJob, fired_at: datetime):
     """执行单个 Cron 任务，每次执行使用全新的 Agent 上下文。"""
+    global _active_cron_context
+    from agent.run_context import create_run_context, initialize_checkpoint
+    from agent.audit import record_event
+
+    context = create_run_context(
+        source="cron",
+        session_id=f"cron:{job.id}",
+        owner_id="system",
+        resource_id=job.id,
+        metadata={
+            "job_id": job.id,
+            "cron": job.cron,
+            "name": job.name,
+            "scheduled_at": fired_at.isoformat(),
+        },
+    )
+    initialize_checkpoint(context)
+    record_event(
+        "cron.run.started",
+        f"Cron run started: {job.id}",
+        result="success",
+        severity="info",
+        actor="cron",
+        session_id=context.session_id,
+        run_id=context.run_id,
+        action_code="automation.schedule",
+        correlation_id=context.run_id,
+        payload=context.to_dict(),
+    )
     try:
+        _active_cron_context = context
         agent = _create_cron_agent()
         output = agent.run(job.prompt)
-        _save_cron_run_log(job, fired_at, output)
+        _save_cron_run_log(
+            job,
+            fired_at,
+            output,
+            run_id=context.run_id,
+            session_id=context.session_id,
+        )
+        record_event(
+            "cron.run.completed",
+            f"Cron run completed: {job.id}",
+            result="success",
+            severity="info",
+            actor="cron",
+            session_id=context.session_id,
+            run_id=context.run_id,
+            action_code="automation.schedule",
+            correlation_id=context.run_id,
+            payload={"output": output[:1000]},
+        )
     except Exception as e:
-        _save_cron_run_log(job, fired_at, "", error=str(e))
+        _save_cron_run_log(
+            job,
+            fired_at,
+            "",
+            error=str(e),
+            run_id=context.run_id,
+            session_id=context.session_id,
+        )
+        record_event(
+            "cron.run.failed",
+            f"Cron run failed: {job.id}",
+            summary=str(e),
+            result="failed",
+            severity="high",
+            actor="cron",
+            session_id=context.session_id,
+            run_id=context.run_id,
+            action_code="automation.schedule",
+            correlation_id=context.run_id,
+        )
+    finally:
+        _active_cron_context = None
 
 
 def _cron_worker_loop():
