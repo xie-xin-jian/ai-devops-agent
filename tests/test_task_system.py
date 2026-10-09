@@ -6,7 +6,7 @@ import json
 import time
 
 import pytest
-from agent.task_system import (
+from agent.orchestration.tasks import (
     create_task, claim_task, complete_task, list_tasks,
     can_start, get_task_json, load_task,
 )

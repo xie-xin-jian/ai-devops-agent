@@ -2,10 +2,10 @@ import {
   BookOpen,
   Box,
   Clock,
-  GitBranch,
   ListTodo,
   MessageSquare,
   Plug,
+  RotateCcw,
   ScrollText,
   ShieldCheck,
   Wrench,
@@ -20,8 +20,8 @@ const navItems = [
   { id: 'mcp' as const, label: 'MCP', icon: Plug },
   { id: 'skills' as const, label: '技能', icon: BookOpen },
   { id: 'actions' as const, label: '审批', icon: ShieldCheck },
-  { id: 'runs' as const, label: 'Runs', icon: GitBranch },
   { id: 'audit' as const, label: '审计', icon: ScrollText },
+  { id: 'recovery' as const, label: '恢复', icon: RotateCcw },
   { id: 'sandboxes' as const, label: 'Sandbox', icon: Box },
 ]
 

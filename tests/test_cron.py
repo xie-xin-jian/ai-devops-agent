@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pytest
 
-from agent import cron
+from agent.orchestration import cron
 
 
 @pytest.fixture(autouse=True)
@@ -46,8 +46,9 @@ def test_execute_uses_fresh_agent_for_each_run(monkeypatch):
             self.messages.append({"role": "user", "content": prompt})
             return f"ok: {prompt}"
 
-    def create_agent():
+    def create_agent(session_id="cron:manual"):
         agent = FakeAgent()
+        agent.session_id = session_id
         created_agents.append(agent)
         return agent
 

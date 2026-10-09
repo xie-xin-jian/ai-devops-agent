@@ -1,22 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException
 from dataclasses import asdict
+import uuid
 
-from agent.rbac import TASK_READ, TASK_WRITE, Principal
+from agent.platform.identity import TASK_READ, TASK_WRITE, Principal
 from api.auth import require_permissions
 from api.schemas import TaskClaimRequest, TaskCompleteRequest, TaskCreateRequest
-from agent.task_system import (
+from agent.orchestration.tasks import (
     Task, create_task, list_tasks, load_task, claim_task, complete_task,
     TASKS_DIR,
 )
-from agent.run_context import create_run_context, initialize_checkpoint
-from agent.run_checkpoint import (
-    PHASE_COMPLETED,
-    PHASE_FAILED,
-    STATUS_COMPLETED,
-    STATUS_FAILED,
-    RunCheckpointStore,
-)
-from agent.audit import record_event
+from agent.observability.audit import record_event
 
 router = APIRouter()
 
@@ -69,28 +62,15 @@ async def claim(
     _principal: Principal = Depends(require_permissions(TASK_WRITE)),
 ):
     owner = payload.owner if payload else "agent"
-    run_context = create_run_context(
-        source="task",
-        session_id=f"task:{task_id}",
-        owner_id=_principal.id,
-        principal=_principal,
-        resource_id=task_id,
-        metadata={"task_id": task_id},
-    )
-    initialize_checkpoint(run_context)
+    run_id = f"run_{uuid.uuid4().hex}"
+    session_id = f"task:{task_id}"
     try:
         result = claim_task(
             task_id,
             owner,
-            run_id=run_context.run_id,
+            run_id=run_id,
         )
         if not result.startswith("Claimed"):
-            checkpoint = RunCheckpointStore().get(run_context.run_id)
-            if checkpoint is not None:
-                checkpoint.status = STATUS_FAILED
-                checkpoint.phase = PHASE_FAILED
-                checkpoint.last_error = result
-                RunCheckpointStore().save(checkpoint)
             raise HTTPException(status_code=409, detail=result)
         record_event(
             "task.claimed",
@@ -98,10 +78,10 @@ async def claim(
             result="success",
             severity="info",
             actor=_principal.id,
-            session_id=run_context.session_id,
-            run_id=run_context.run_id,
+            session_id=session_id,
+            run_id=run_id,
             action_code="task.manage",
-            correlation_id=run_context.run_id,
+            correlation_id=run_id,
             payload={"task_id": task_id, "owner": owner},
         )
         return _task_dict(load_task(task_id))
@@ -125,16 +105,6 @@ async def complete(
         if not msg.startswith("Completed"):
             raise HTTPException(status_code=409, detail=msg)
         if run_id:
-            store = RunCheckpointStore()
-            checkpoint = store.get(run_id)
-            if checkpoint is not None:
-                checkpoint.status = STATUS_COMPLETED
-                checkpoint.phase = PHASE_COMPLETED
-                checkpoint.metadata = {
-                    **checkpoint.metadata,
-                    "result": result_text,
-                }
-                store.save(checkpoint)
             record_event(
                 "task.completed",
                 f"Task completed: {task_id}",

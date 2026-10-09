@@ -3,7 +3,8 @@
 import threading
 from types import SimpleNamespace
 
-from agent import comprehensive
+from agent.core import comprehensive
+from agent.core import pipeline
 
 
 def test_cancelled_tool_turns_keep_valid_message_pairing(monkeypatch):
@@ -18,8 +19,8 @@ def test_cancelled_tool_turns_keep_valid_message_pairing(monkeypatch):
         SimpleNamespace(type="tool_use", name="second", input={}, id="call_2"),
     ]
 
-    monkeypatch.setattr(comprehensive, "trigger_hooks", lambda *args: None)
-    monkeypatch.setattr(comprehensive, "collect_background_results", lambda: [])
+    monkeypatch.setattr(pipeline, "trigger_hooks", lambda *args: None)
+    monkeypatch.setattr(pipeline, "collect_background_results", lambda: [])
     monkeypatch.setattr(agent, "_compact_if_needed", lambda messages: messages)
     monkeypatch.setattr(
         agent,

@@ -1,13 +1,15 @@
 """Memory scope, ownership, approval, and audit tests."""
 
-from agent import comprehensive, memory
-from agent import config
-from agent.audit import AuditStore
-from agent.memory_policy import (
+from agent.core import comprehensive
+from agent.memory import service as memory
+from agent.platform import config
+from agent.observability.audit import AuditStore
+from agent.memory.policy import (
     can_read_scope,
     can_write_scope,
 )
-from agent.rbac import principal_from_roles
+from agent.platform.identity import principal_from_roles
+from agent.tools.registry import ToolRegistry
 
 
 def _memory_agent(
@@ -18,7 +20,7 @@ def _memory_agent(
     memory_scope,
     audit_path=None,
 ):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     agent = object.__new__(comprehensive.ComprehensiveAgent)
     agent.memory = memory.MemorySystem()
     agent.memory_scope = memory_scope
@@ -26,20 +28,18 @@ def _memory_agent(
     agent.session_id = "session-1"
     agent.current_run_id = "run-1"
     agent.audit_enabled = audit_path is not None
-    agent.current_action = None
-    agent.tools = []
-    agent.handlers = {}
+    agent.tool_registry = ToolRegistry.builtin()
     agent._add_memory_tools()
     if audit_path is not None:
         monkeypatch.setattr(
-            "agent.audit.AUDIT_EVENTS_PATH",
+            "agent.observability.audit.AUDIT_EVENTS_PATH",
             audit_path,
         )
     return agent
 
 
 def test_memory_record_persists_owner_session_and_run(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
 
     record = system.add(
@@ -155,8 +155,9 @@ def test_candidate_approval_and_audit(tmp_path, monkeypatch):
         memory_scope="global",
         audit_path=audit_path,
     )
-    monkeypatch.setattr(memory, "MEMORY_NEAR_DUP_THRESHOLD", 0.60)
-    monkeypatch.setattr(memory, "MEMORY_AUTO_MERGE_THRESHOLD", 0.99)
+    monkeypatch.setattr("agent.memory.retrieval.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
+    monkeypatch.setattr("agent.memory.lifecycle.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
+    monkeypatch.setattr("agent.memory.lifecycle.MEMORY_AUTO_MERGE_THRESHOLD", 0.99)
     agent.memory.add(
         "Server A uses Nginx",
         scope="global",
@@ -188,16 +189,17 @@ def test_memory_api_filters_scopes_and_approves_candidate(
     from fastapi.testclient import TestClient
     from api.main import app
 
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     monkeypatch.setattr(
-        "agent.audit.AUDIT_EVENTS_PATH",
+        "agent.observability.audit.AUDIT_EVENTS_PATH",
         tmp_path / "audit.jsonl",
     )
     monkeypatch.setattr(config, "API_AUTH_TOKEN", "developer-token")
     monkeypatch.setattr(config, "API_AUTH_USER", "alice")
     monkeypatch.setattr(config, "API_AUTH_ROLES", ["developer"])
-    monkeypatch.setattr(memory, "MEMORY_NEAR_DUP_THRESHOLD", 0.60)
-    monkeypatch.setattr(memory, "MEMORY_AUTO_MERGE_THRESHOLD", 0.99)
+    monkeypatch.setattr("agent.memory.retrieval.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
+    monkeypatch.setattr("agent.memory.lifecycle.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
+    monkeypatch.setattr("agent.memory.lifecycle.MEMORY_AUTO_MERGE_THRESHOLD", 0.99)
 
     system = memory.MemorySystem()
     system.add(

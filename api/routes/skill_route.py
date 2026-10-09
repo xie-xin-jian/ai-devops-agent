@@ -1,20 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from agent.skill import SKILL_REGISTRY, scan_skills, list_skills, load_skill
-from agent.rbac import SKILL_READ, Principal
+from agent.platform.skill import SKILL_REGISTRY, scan_skills, load_skill
+from agent.platform.identity import SKILL_READ, Principal
 from api.auth import require_permissions
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
-
-
-class SkillResponse(BaseModel):
-    name: str
-    description: str
-
-
-class SkillDetailResponse(SkillResponse):
-    content: str
-
 
 @router.get("")
 def list_skills_endpoint(

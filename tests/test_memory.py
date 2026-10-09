@@ -4,17 +4,18 @@ import json
 
 import pytest
 
-from agent import memory
+from agent.memory import service as memory
+from agent.memory import store as memory_store
 
 
 def test_memory_select_does_not_rewrite_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     system.add("remember this")
 
     write_calls = []
     monkeypatch.setattr(
-        memory,
+        memory_store,
         "atomic_write_text",
         lambda *args, **kwargs: write_calls.append((args, kwargs)),
     )
@@ -24,7 +25,7 @@ def test_memory_select_does_not_rewrite_file(tmp_path, monkeypatch):
 
 
 def test_legacy_memory_is_normalized(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     path = tmp_path / "memories.jsonl"
     path.write_text(
         json.dumps({
@@ -51,7 +52,7 @@ def test_legacy_memory_is_normalized(tmp_path, monkeypatch):
 
 
 def test_exact_duplicate_updates_existing_memory(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
 
     first = system.add(
@@ -73,7 +74,7 @@ def test_exact_duplicate_updates_existing_memory(tmp_path, monkeypatch):
 
 
 def test_scope_filter_prevents_cross_scope_recall(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
 
     system.add("Use Nginx", scope="project:a")
@@ -85,7 +86,7 @@ def test_scope_filter_prevents_cross_scope_recall(tmp_path, monkeypatch):
 
 
 def test_invalid_importance_is_rejected(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
 
     with pytest.raises(ValueError, match="importance"):
@@ -95,7 +96,7 @@ def test_invalid_importance_is_rejected(tmp_path, monkeypatch):
 
 
 def test_update_memory_changes_fields_and_version(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     record = system.add("Server A uses Nginx")
 
@@ -114,7 +115,7 @@ def test_update_memory_changes_fields_and_version(tmp_path, monkeypatch):
 
 
 def test_update_to_existing_content_merges_records(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     first = system.add("Server A uses Nginx", tags=["nginx"])
     second = system.add("Server A listens on port 80", tags=["port-80"])
@@ -128,7 +129,7 @@ def test_update_to_existing_content_merges_records(tmp_path, monkeypatch):
 
 
 def test_archive_and_restore_memory(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     record = system.add("Archive this memory")
 
@@ -142,7 +143,7 @@ def test_archive_and_restore_memory(tmp_path, monkeypatch):
 
 
 def test_delete_memory_is_soft_delete(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     record = system.add("Delete this memory")
 
@@ -154,7 +155,7 @@ def test_delete_memory_is_soft_delete(tmp_path, monkeypatch):
 
 
 def test_entity_conflict_archives_old_value(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     old = system.add(
         "Server A uses Nginx",
@@ -181,7 +182,7 @@ def test_updating_archived_entity_does_not_archive_active_value(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     archived = system.add(
         "Server A uses Nginx",

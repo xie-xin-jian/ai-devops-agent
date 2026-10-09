@@ -5,7 +5,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from agent import mcp
+from agent.mcp import stdio as mcp
 
 
 def test_recv_response_skips_unrelated_request_id():

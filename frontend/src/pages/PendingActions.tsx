@@ -156,10 +156,26 @@ export default function PendingActions() {
                         disabled={busyId === action.id}
                       >
                         <Check size={14} />
-                        批准
+                        批准并执行
                       </Button>
                     </div>
-                  )}
+                    )}
+
+                    {action.result_payload?.summary && (
+                      <div className="mt-3 rounded-lg bg-bg-tertiary px-3 py-2">
+                        <div className="mb-1 text-xs font-medium text-text-secondary">
+                          执行结果
+                        </div>
+                        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words text-xs text-text-secondary">
+                          {action.result_payload.summary}
+                        </pre>
+                      </div>
+                    )}
+                    {action.result_payload?.error && (
+                      <div className="mt-3 rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-2 text-xs text-status-error">
+                        {action.result_payload.error}
+                      </div>
+                    )}
                 </div>
               </div>
             ))}
@@ -191,7 +207,8 @@ function riskVariant(risk: string): 'success' | 'warning' | 'error' | 'info' | '
 
 function statusVariant(status: string): 'success' | 'warning' | 'error' | 'info' | 'default' {
   if (status === 'confirmed') return 'info'
-  if (status === 'canceled') return 'error'
+  if (status === 'executed') return 'success'
+  if (status === 'failed' || status === 'canceled') return 'error'
   if (status === 'pending') return 'warning'
   return 'default'
 }

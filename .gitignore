@@ -26,6 +26,7 @@ build/
 .memory/
 .audit/
 .sandboxes/
+.sessions/
 .runs/
 .background/
 .cron_logs/

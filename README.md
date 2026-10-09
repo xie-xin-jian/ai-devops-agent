@@ -4,23 +4,24 @@
 
 核心是一个“模型推理 -> 工具调用 -> 结果回填”的 Agent Loop。项目集成内置工具、MCP 动态工具、会话隔离、上下文压缩、长期记忆、任务图、后台任务、Cron 调度和 SSE 执行轨迹。
 
-> 当前实现更适合本地开发、学习和可信环境使用。Session 和运行状态仍主要保存在进程内存中，不是完整的多租户生产安全系统。
+> 当前实现更适合本地开发、学习和可信环境使用。Session 消息和 Run 安全点已经持久化，但活动锁、取消事件和 MCP 连接仍是进程内状态，不是完整的多租户生产系统。
 
 ## 核心特性
 
 - **Agent Loop**：最多 50 轮模型调用，支持多轮推理、工具执行和结果回填
-- **内置工具系统**：39 个内置工具，使用 `Schema + Handler` 双注册表
+- **内置工具系统**：40 个内置工具，使用 `Schema + Handler` 双注册表
 - **MCP 动态工具池**：支持内置、自定义、stdio 和 SSE MCP，运行时注入 `mcp__server__tool`
-- **会话级上下文隔离**：每个 Session 拥有独立 Agent、消息历史、恢复状态、运行锁和取消事件
+- **会话级上下文隔离**：每个 Session 拥有独立 Agent、消息历史、运行锁和取消事件
+- **轻量崩溃恢复**：Session 原始消息和 Run 安全点持久化，启动时标记未完成 Run，并支持人工从安全点继续
 - **上下文压缩**：大结果持久化、微压缩、消息裁剪、摘要压缩和反应式压缩
 - **错误恢复**：429 指数退避、529 模型降级、Prompt 过长恢复和输出 Token 预算扩容
 - **任务系统**：支持 Todo 清单和带 `blockedBy` 依赖关系的持久化任务图
 - **长期记忆**：结构化 `MemoryRecord`，支持类型、scope、实体、标签、来源、置信度和生命周期管理，提供精确去重、软删除与 JSONL 持久化
-- **后台任务**：慢 Bash 命令异步执行，完成后在后续 Agent 轮次注入结果
+- **后台任务**：已批准的慢 Bash 命令异步执行，完成后在后续 Agent 轮次注入结果
 - **Cron 调度**：五字段 Cron 解析、持久化任务、单执行器队列和运行日志
 - **Skill 与 SubAgent**：按需加载 Markdown Skill，派生独立上下文执行子任务
-- **SSE 实时事件**：展示 Agent 状态、工具调用、工具结果和最终文本
-- **可视化管理界面**：React 页面覆盖聊天、任务、Cron、工具、MCP 和 Skill
+- **SSE 实时事件**：展示 Agent 状态、工具调用、工具结果、审批通知和最终文本
+- **可视化管理界面**：React 页面覆盖聊天、任务、Cron、工具、MCP、Skill、审批、审计和 Sandbox
 
 ## 技术栈
 
@@ -41,7 +42,10 @@
   -> ComprehensiveAgent
   -> 组装 System Prompt / 工具 / 记忆 / Skill / MCP
   -> 调用模型
-      -> 有 tool_use：执行工具并写回 tool_result
+      -> 有 tool_use：由 Tool Policy 统一判断执行方式
+          -> 只读巡检：直接执行
+          -> 文件 / 子 Agent：在 Docker Sandbox 中执行
+          -> Bash：生成 Pending Action，批准后在 Sandbox 中执行
       -> 无 tool_use：生成最终回答
   -> SSE 推送状态和执行轨迹
 ```
@@ -127,7 +131,7 @@ ENABLE_UNSAFE_MCP_SHELL=0
 | `MEMORY_ACCESS_FLUSH_BATCH` | 访问统计批量写入条数 |
 | `API_AUTH_TOKEN` | 可选的 API Bearer Token |
 | `API_AUTH_USER` | 当前 API Token 对应的用户 ID |
-| `API_AUTH_ROLES` | 逗号分隔的 RBAC 角色 |
+| `API_AUTH_ROLES` | 当前用户角色；仅用于记忆全局管理和只读边界，不再启用细粒度权限矩阵 |
 | `DOCKER_HOST` | 远程 Docker daemon 地址；未配置时默认拒绝沙箱执行 |
 | `SANDBOX_IMAGE` | 每次 Run 使用的沙箱镜像 |
 | `SANDBOX_TIMEOUT_SECONDS` | 单条沙箱命令超时时间 |
@@ -152,6 +156,7 @@ DATA_DIR/
 ├── .background/
 ├── .memory/
 ├── .sandboxes/
+├── .sessions/
 ├── .runs/
 ├── .tasks/
 ├── .task_outputs/
@@ -162,9 +167,18 @@ DATA_DIR/
 
 `DATA_DIR` 只决定应用运行数据的默认位置。Agent 命令执行使用独立的 Docker Sandbox。
 
-`.runs/` 保存每个 Run 的阶段、消息、恢复状态、Sandbox 工作区引用和待审批动作 ID。进程重启后可通过 Run API 查询并恢复未完成的 Run。
+`.sessions/` 保存 Session 原始消息，保证刷新页面和后端重启后仍能恢复对话历史。`.runs/` 只保存轻量 Run 状态、阶段和安全点快照，不恢复旧版 Action Router 或完整 Checkpoint。
 
-Chat、Task、Cron、Background 和 MCP 运行统一记录 `run_id/source/parent_run_id/resource_id`。Background 任务使用独立 Run 和独立 Docker Sandbox，结果保存在 `.background/`。
+进程异常退出后，启动恢复会：
+
+1. 将仍为 `running` 的 Run 标记为 `interrupted`。
+2. 记录中断原因和中断时正在执行的工具。
+3. 只有最后一个安全点没有工具在途时才允许人工继续。
+4. 将崩溃时仍在运行的 Background Task 标记为失败。
+5. 将已确认但没有完成的 Pending Action 标记为失败。
+6. 清理遗留的 Docker Sandbox 容器和工作区。
+
+如果进程在工具执行期间崩溃，系统不会自动重放该工具，避免重复执行 Bash、部署或删除操作。
 
 ### 4. 启动后端
 
@@ -217,7 +231,20 @@ API 文档：http://localhost:8000/docs
 
 默认配置不挂载宿主 Docker Socket。沙箱执行应通过 `DOCKER_HOST` 连接远程 Docker daemon；未配置时返回错误，不会回退到宿主 Shell。
 
-每个 Agent Run 会创建独立容器和独立工作区，容器使用非 root 用户、只读根文件系统、资源限制和 `no-new-privileges`，Run 结束或取消后自动清理。
+Sandbox 采用懒创建：只有文件写入、子 Agent 或已批准的 Bash 需要执行时才会创建容器。容器使用非 root 用户、只读根文件系统、资源限制和 `no-new-privileges`，执行结束后自动清理。
+
+## 工具执行策略
+
+所有工具调用先经过同一个 `Tool Policy`：
+
+| 类型 | 策略 |
+|---|---|
+| CPU、内存、磁盘、进程、网络等只读巡检 | 直接执行并记录审计 |
+| `read_file`、`write_file`、`edit_file`、`glob`、`spawn_subagent` | 在 Docker Sandbox 中执行 |
+| `bash` | 创建 Pending Action，用户批准后执行；拒绝后不会执行 |
+| Memory、Task、Cron、普通 MCP | 按策略执行并记录轻量日志 |
+
+高风险动态 MCP 工具仍会由 Tool Policy 标记为需要审批。这里不再维护 Action Router、Preflight 和跨系统 Run Checkpoint 等重复治理层。
 
 ## API 认证
 
@@ -269,6 +296,22 @@ curl http://localhost:8000/tools \
 | POST | `/api/chat/cancel` | 取消指定 Session 的当前执行 |
 | GET | `/api/messages/` | 获取 Session 可见消息 |
 | POST | `/api/reset/` | 重置指定 Session |
+
+### 审批、记忆、审计与 Sandbox
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/actions/pending` | 查询待审批和执行记录 |
+| POST | `/api/actions/pending/{id}/confirm` | 批准并执行 |
+| POST | `/api/actions/pending/{id}/cancel` | 拒绝动作 |
+| GET | `/api/memory/` | 查询当前身份可见的长期记忆 |
+| POST | `/api/memory/{id}/approve` | 批准候选记忆 |
+| GET | `/api/audit/events` | 查询审计事件 |
+| GET | `/api/audit/timeline` | 查询 Session 时间线 |
+| GET | `/api/sandboxes/` | 查询活动 Sandbox |
+| GET | `/api/recovery/runs` | 查询 Session 和中断 Run |
+| GET | `/api/recovery/runs/{id}` | 查看安全点和中断原因 |
+| POST | `/api/recovery/runs/{id}/resume/stream` | 从安全点手动继续 |
 
 ### 任务管理
 
@@ -324,6 +367,7 @@ status       当前阶段和轮次
 thinking     开始模型调用
 tool_use     准备执行工具
 tool_result  工具执行完成
+pending_action 已创建待审批动作
 text_delta   最终文本增量
 done         当前 Agent Loop 完成
 cancelled    用户取消
@@ -340,7 +384,7 @@ curl -N -X POST http://localhost:8000/api/chat/stream \
 
 当前 `text_delta` 是拿到完整模型响应后按词拆分发送，不是模型原生 Token Streaming。工具调用和状态事件是实时产生的。
 
-## 内置工具（39 个）
+## 内置工具（40 个）
 
 | 类别 | 工具 |
 |---|---|
@@ -391,28 +435,69 @@ tool_result_budget
 ```text
 ai-devops-agent/
 ├── agent/
-│   ├── comprehensive.py        # Agent Loop 和子系统组装
-│   ├── config.py               # 环境配置和路径
-│   ├── permission.py           # 工具权限和路径检查
-│   ├── hooks.py                # PreToolUse / PostToolUse / Stop Hook
-│   ├── context_compact.py      # 上下文预算、裁剪和摘要
-│   ├── error_recovery.py       # 重试、降级和 Token 扩容
-│   ├── memory.py               # 长期记忆
-│   ├── task_system.py          # 持久化依赖任务图
-│   ├── todo.py                 # 会话待办清单
-│   ├── background.py           # 后台任务
-│   ├── cron.py                 # Cron 调度和执行日志
-│   ├── mcp.py                  # MCP Client 和动态工具池
-│   ├── skill.py                # Skill 扫描和加载
-│   ├── subagent.py             # 子 Agent
-│   ├── messages.py             # 可见消息序列化
-│   ├── storage.py              # 原子写入
-│   ├── logger.py               # 日志
-│   └── tools/
-│       ├── __init__.py         # 工具聚合注册
-│       ├── shell.py            # Bash 执行
-│       ├── file_tools.py       # 文件工具
-│       └── ops.py              # 运维工具
+│   ├── core/
+│   │   ├── comprehensive.py    # Agent facade 和依赖组装
+│   │   ├── agent_runtime.py    # Runtime Mixin 组合入口
+│   │   ├── pipeline.py         # 推理循环和运行事件
+│   │   ├── persistence.py      # Session / Run 安全点持久化
+│   │   ├── tool_loop.py        # 工具策略、审批和模型调用
+│   │   ├── context_manager.py  # Prompt、记忆召回和上下文压缩
+│   │   ├── context_compact.py  # 上下文预算、裁剪和摘要
+│   │   ├── error_recovery.py   # 重试、降级和 Token 扩容
+│   │   └── hooks.py            # Agent Hook 注册与触发
+│   ├── tools/
+│   │   ├── registry.py         # Schema + Handler + Policy 注册表
+│   │   ├── executor.py         # 宿主、Sandbox、审批工具执行入口
+│   │   ├── policy.py           # 工具执行策略
+│   │   ├── business/           # 业务工具按领域拆分
+│   │   │   ├── tasks.py
+│   │   │   ├── knowledge.py
+│   │   │   ├── memory.py
+│   │   │   ├── automation.py
+│   │   │   └── integrations.py
+│   │   ├── file_tools.py       # 文件工具
+│   │   ├── shell.py            # Bash 工具
+│   │   └── ops.py              # 运维工具
+│   ├── sessions/
+│   │   ├── manager.py          # Session 生命周期、TTL、锁和恢复
+│   │   ├── state_store.py      # Session 与 Run 安全点持久化
+│   │   └── messages.py         # 可见消息序列化
+│   ├── memory/
+│   │   ├── models.py           # Memory 模型、校验和评分
+│   │   ├── store.py            # JSONL 持久化和访问统计
+│   │   ├── retrieval.py        # 检索、相关性和格式化
+│   │   ├── lifecycle.py        # 新增、更新、归档、删除和合并
+│   │   ├── service.py          # MemorySystem 组合入口
+│   │   └── policy.py           # Memory 作用域和所有权规则
+│   ├── mcp/
+│   │   ├── registry.py         # MCP Client 和动态工具池
+│   │   ├── builtin.py          # 内置 Mock MCP
+│   │   ├── custom.py           # 自定义 MCP Handler
+│   │   ├── stdio.py            # stdio JSON-RPC
+│   │   ├── sse.py              # SSE JSON-RPC
+│   │   └── client.py           # 兼容门面
+│   ├── sandbox/
+│   │   ├── backend.py          # Docker 和容器抽象
+│   │   ├── workspace.py        # 工作区隔离和路径约束
+│   │   ├── cleanup.py          # 孤儿资源清理
+│   │   └── manager.py          # Sandbox 生命周期
+│   ├── orchestration/
+│   │   ├── tasks.py            # 持久化依赖任务图
+│   │   ├── todo.py             # 无状态 Todo 工具
+│   │   ├── cron.py             # Cron 调度和日志
+│   │   ├── background.py       # 后台任务
+│   │   ├── pending_actions.py  # 待审批动作持久化
+│   │   └── pending_executor.py # 审批后的统一执行
+│   ├── observability/
+│   │   ├── audit.py            # 审计事件
+│   │   └── logger.py           # 日志
+│   ├── platform/
+│   │   ├── config.py           # 环境配置和路径
+│   │   ├── storage.py          # 原子写入
+│   │   ├── identity.py         # 用户身份模型
+│   │   └── skill.py            # Skill 扫描和加载
+│   └── extensions/
+│       └── subagent.py         # 子 Agent
 ├── api/
 │   ├── main.py                 # FastAPI 入口
 │   ├── auth.py                 # API Bearer Token 中间件
@@ -421,11 +506,16 @@ ai-devops-agent/
 │       ├── task.py
 │       ├── cron_route.py
 │       ├── mcp_route.py
-│       └── skill_route.py
+│       ├── skill_route.py
+│       ├── action_route.py
+│       ├── memory_route.py
+│       ├── audit_route.py
+│       ├── recovery_route.py
+│       └── sandbox_route.py
 ├── frontend/
 │   ├── src/api/
 │   ├── src/components/
-│   ├── src/pages/              # 6 个功能页面
+│   ├── src/pages/              # 聊天、任务、审批、审计、Sandbox 等页面
 │   ├── src/store/
 │   └── src/types/
 ├── mcp_servers/
@@ -490,6 +580,7 @@ pytest -q
 - MCP JSON-RPC 和并发串行
 - 上下文压缩安全边界
 - 消息序列化
+- Session 持久化、Run 安全点和启动恢复
 - 文件原子写入
 - 安全加固
 
@@ -497,8 +588,9 @@ pytest -q
 
 ## 已知限制
 
-- Session、取消状态和运行锁保存在进程内存中，重启后丢失
-- 当前 Agent Loop 不支持崩溃后继续执行
+- Session 消息和 Run 安全点会持久化，但活动取消事件、运行锁和 MCP 连接仍保存在进程内存中
+- 只有不在工具执行中的安全点允许人工继续；工具在途时只标记中断，不自动重放
+- 启动恢复按单实例 DATA_DIR 设计，多实例共享目录需要增加分布式租约
 - 任务、记忆和 MCP 连接仍包含进程级全局状态
 - 记忆检索以关键词、中文 bigram、标签、实体和元数据排序为主，尚未接入向量语义检索
 - 记忆仅做精确内容去重，语义相近记录仍需后续合并策略

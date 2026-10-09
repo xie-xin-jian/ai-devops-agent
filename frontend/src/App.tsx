@@ -7,9 +7,9 @@ import Tools from './pages/Tools'
 import MCP from './pages/MCP'
 import Skills from './pages/Skills'
 import PendingActions from './pages/PendingActions'
-import Runs from './pages/Runs'
 import Audit from './pages/Audit'
 import Sandboxes from './pages/Sandboxes'
+import Recovery from './pages/Recovery'
 import { useAppStore } from './store/useAppStore'
 
 function App() {
@@ -49,9 +49,9 @@ function App() {
     mcp: <MCP />,
     skills: <Skills />,
     actions: <PendingActions />,
-    runs: <Runs />,
     audit: <Audit />,
     sandboxes: <Sandboxes />,
+    recovery: <Recovery />,
   }
 
   return <Layout>{pages[view] || <Chat />}</Layout>

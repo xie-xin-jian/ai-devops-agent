@@ -1,6 +1,6 @@
 """Near-duplicate and access persistence tests."""
 
-from agent import memory
+from agent.memory import service as memory
 
 
 def test_similarity_score_detects_close_text():
@@ -11,7 +11,7 @@ def test_similarity_score_detects_close_text():
 
 
 def test_high_similarity_memory_is_merged(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     first = system.add("Server A uses Nginx")
 
@@ -28,9 +28,10 @@ def test_high_similarity_memory_is_merged(tmp_path, monkeypatch):
 
 
 def test_medium_similarity_memory_becomes_candidate(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
-    monkeypatch.setattr(memory, "MEMORY_NEAR_DUP_THRESHOLD", 0.60)
-    monkeypatch.setattr(memory, "MEMORY_AUTO_MERGE_THRESHOLD", 0.99)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.retrieval.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
+    monkeypatch.setattr("agent.memory.lifecycle.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
+    monkeypatch.setattr("agent.memory.lifecycle.MEMORY_AUTO_MERGE_THRESHOLD", 0.99)
     system = memory.MemorySystem()
     system.add("Server A uses Nginx")
 
@@ -44,7 +45,7 @@ def test_medium_similarity_memory_becomes_candidate(tmp_path, monkeypatch):
 
 
 def test_access_counts_are_persisted_in_batch(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     record = system.add("remember this")
 
@@ -60,7 +61,7 @@ def test_access_counts_are_not_double_counted_after_save(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     record = system.add("remember this")
 

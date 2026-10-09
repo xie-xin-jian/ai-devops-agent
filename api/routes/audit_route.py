@@ -2,8 +2,8 @@
 
 from fastapi import APIRouter, Depends
 
-from agent.audit import AuditStore
-from agent.rbac import AUDIT_VIEW, Principal
+from agent.observability.audit import AuditStore
+from agent.platform.identity import AUDIT_VIEW, Principal
 from api.auth import require_permissions
 
 

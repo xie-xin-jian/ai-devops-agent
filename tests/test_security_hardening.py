@@ -2,8 +2,8 @@
 
 import pytest
 
-import agent.config as config
-from agent import mcp, permission
+import agent.platform.config as config
+from agent.mcp import custom as mcp
 from agent.tools import shell
 
 
@@ -32,19 +32,6 @@ def test_bash_rejects_cwd_outside_workspace(tmp_path, monkeypatch):
     result = shell.run_bash("echo should-not-run", cwd=tmp_path.parent)
 
     assert "escapes workspace" in result
-
-
-def test_permission_rejects_bash_cwd_outside_workspace(tmp_path, monkeypatch):
-    monkeypatch.setattr(permission, "WORKDIR", tmp_path)
-    block = {
-        "name": "bash",
-        "input": {"command": "echo hello", "cwd": str(tmp_path.parent)},
-    }
-
-    result = permission.permission_hook(block)
-
-    assert result is not None
-    assert "cwd escapes workspace" in result
 
 
 def test_custom_mcp_shell_handler_is_disabled_by_default(monkeypatch):

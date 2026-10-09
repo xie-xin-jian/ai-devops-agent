@@ -11,8 +11,8 @@ type View =
   | 'mcp'
   | 'skills'
   | 'actions'
-  | 'runs'
   | 'audit'
+  | 'recovery'
   | 'sandboxes'
 
 export interface ToolCallRecord {
@@ -63,7 +63,6 @@ interface AppState {
   sessionId: string
   chatSessions: ChatSession[]
   fetchChatSessions: () => Promise<void>
-  activeAction: any | null
   sendMessage: (msg: string) => Promise<void>
   fetchMessages: () => Promise<void>
   resetMessages: () => Promise<void>
@@ -191,7 +190,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Keep the local session index if server-side discovery is unavailable.
     }
   },
-  activeAction: null,
   isStreaming: false,
   currentTurn: 0,
   toolHistory: [],
@@ -227,7 +225,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       liveText: '',
       currentStatus: '准备中...',
       currentTurn: 0,
-      activeAction: null,
     }))
     if (get().sessionId) {
       updateSessionTitle(get().sessionId, msg, set, get)
@@ -242,24 +239,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         get().sessionId,
         (event: StreamEvent) => {
           switch (event.type) {
-            case 'action':
-              set({
-                currentStatus: event.action
-                  ? `已选择动作：${event.action.display_name}`
-                  : '已选择执行动作',
-                activeAction: event.action || null,
-              })
-              break
             case 'pending_action':
               set({
                 currentStatus: event.pending_action
                   ? `待审批：${event.pending_action.title}`
                   : '已生成待审批动作',
-              })
-              break
-            case 'permission_denied':
-              set({
-                currentStatus: event.message || '权限不足',
               })
               break
             case 'status':
@@ -391,7 +375,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentStatus: '',
       currentTurn: 0,
       toolHistory: [],
-      activeAction: null,
       isStreaming: false,
       isLoading: false,
     })
@@ -410,7 +393,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentStatus: '正在加载会话...',
       currentTurn: 0,
       toolHistory: [],
-      activeAction: null,
     })
     localStorage.setItem('session_id', sessionId)
     await get().fetchMessages()

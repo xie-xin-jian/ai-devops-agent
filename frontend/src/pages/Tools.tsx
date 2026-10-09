@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Wrench, Terminal, FileText, ListTodo, Clock, Puzzle, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react'
+import { Wrench, Terminal, ListTodo, Clock, Puzzle, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import Badge from '../components/Badge'
 

@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from agent.messages import serialize_visible_messages
+from agent.sessions.messages import serialize_visible_messages
 
 
 def test_serialize_visible_messages_keeps_only_text_dialogue():

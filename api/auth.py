@@ -6,8 +6,8 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-import agent.config as config
-from agent.rbac import Principal, configured_api_principal
+import agent.platform.config as config
+from agent.platform.identity import Principal, configured_api_principal
 
 
 _PUBLIC_PATHS = {

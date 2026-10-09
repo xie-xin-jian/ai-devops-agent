@@ -1,6 +1,6 @@
 """Tool catalog consistency tests."""
 
-from agent import comprehensive
+from agent.core import comprehensive
 
 
 def test_tool_catalog_contains_all_registered_tools():
@@ -30,4 +30,4 @@ def test_docker_tools_are_not_registered():
     }
 
     assert names.isdisjoint({"docker_ps", "docker_logs", "docker_stats"})
-    assert len(names) == 41
+    assert len(names) == 40

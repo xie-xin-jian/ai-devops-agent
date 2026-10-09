@@ -1,11 +1,11 @@
 import glob as g
 from pathlib import Path
 
-from agent.config import WORKDIR
+from agent.platform.config import WORKDIR
 
 
 def safe_path(p: str, cwd: Path = None) -> Path:
-    base = cwd or WORKDIR
+    base = (cwd or WORKDIR).resolve()
     path = (base / p).resolve()
     if not path.is_relative_to(base):
         raise ValueError(f"Path escapes workspace: {p}")

@@ -33,7 +33,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 
 // 对话
 export interface StreamEvent {
-  type: 'status' | 'action' | 'pending_action' | 'permission_denied' | 'tool_use' | 'tool_result' | 'thinking' | 'text_delta' | 'done' | 'cancelled' | 'error'
+  type: 'status' | 'pending_action' | 'tool_use' | 'tool_result' | 'thinking' | 'text_delta' | 'done' | 'cancelled' | 'error'
   message?: string
   turn?: number
   tool?: string
@@ -43,15 +43,6 @@ export interface StreamEvent {
   delta?: string
   text?: string
   total_turns?: number
-  action?: {
-    code: string
-    display_name: string
-    risk_level: string
-    agent_mode: string
-    preflight_required: boolean
-    requires_approval: boolean
-    allowed_tools: string[]
-  }
   pending_action?: {
     id: string
     action_code: string
@@ -62,16 +53,9 @@ export interface StreamEvent {
     rollback_plan?: string
     verification?: string
   }
-  missing_permissions?: string[]
 }
 
 export const chatApi = {
-  send: (message: string, sessionId?: string) =>
-    request<{ response: string; session_id: string }>('/api/chat/', {
-      method: 'POST',
-      body: JSON.stringify({ message, session_id: sessionId }),
-    }),
-
   // SSE 流式对话
   stream: (
     message: string,
@@ -147,8 +131,6 @@ export const actionApi = {
       `/api/actions/pending${query ? `?${query}` : ''}`
     )
   },
-  get: (actionId: string) =>
-    request<any>(`/api/actions/pending/${actionId}`),
   confirm: (actionId: string, actor = 'api-user') =>
     request<any>(`/api/actions/pending/${actionId}/confirm`, {
       method: 'POST',
@@ -180,71 +162,31 @@ export const auditApi = {
       `/api/audit/events${suffix ? `?${suffix}` : ''}`
     )
   },
-  timeline: (sessionId: string, limit = 500) => {
-    const query = new URLSearchParams({
-      session_id: sessionId,
-      limit: String(limit),
-    })
-    return request<any>(`/api/audit/timeline?${query.toString()}`)
-  },
-  run: (runId: string) =>
-    request<any>(`/api/audit/runs/${runId}`),
 }
 
-export const rbacApi = {
-  me: () => request<any>('/api/rbac/me'),
-  permissions: () =>
-    request<{ permissions: any[] }>('/api/rbac/permissions'),
-  roles: () => request<{ roles: any[] }>('/api/rbac/roles'),
-}
-
-export const memoryApi = {
-  list: (params: {
-    scope?: string
-    status?: string
-    sessionId?: string
-  } = {}) => {
-    const query = new URLSearchParams()
-    if (params.scope) query.set('scope', params.scope)
-    if (params.status) query.set('status', params.status)
-    if (params.sessionId) query.set('session_id', params.sessionId)
-    const suffix = query.toString()
-    return request<{ memories: any[]; count: number }>(
-      `/api/memory/${suffix ? `?${suffix}` : ''}`
-    )
-  },
-  approve: (memoryId: string, sessionId = '') => {
-    const query = new URLSearchParams()
-    if (sessionId) query.set('session_id', sessionId)
-    const suffix = query.toString()
-    return request<any>(
-      `/api/memory/${memoryId}/approve${suffix ? `?${suffix}` : ''}`,
-      { method: 'POST' }
-    )
-  },
-}
-
-export const runApi = {
+export const recoveryApi = {
   list: (params: {
     sessionId?: string
     status?: string
+    limit?: number
   } = {}) => {
     const query = new URLSearchParams()
     if (params.sessionId) query.set('session_id', params.sessionId)
     if (params.status) query.set('status', params.status)
+    if (params.limit) query.set('limit', String(params.limit))
     const suffix = query.toString()
     return request<{ runs: any[] }>(
-      `/api/runs/${suffix ? `?${suffix}` : ''}`
+      `/api/recovery/runs${suffix ? `?${suffix}` : ''}`
     )
   },
   get: (runId: string) =>
-    request<any>(`/api/runs/${runId}`),
+    request<any>(`/api/recovery/runs/${runId}`),
   resumeStream: async (
     runId: string,
     onEvent: (event: StreamEvent) => void,
     signal?: AbortSignal
   ) => {
-    const res = await fetch(`/api/runs/${runId}/resume/stream`, {
+    const res = await fetch(`/api/recovery/runs/${runId}/resume/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -253,8 +195,12 @@ export const runApi = {
       signal,
     })
     if (!res.ok || !res.body) {
-      throw new Error(`恢复 Run 失败: ${res.status}`)
+      const payload = await res.json().catch(() => null)
+      throw new Error(
+        payload?.detail || payload?.error || `恢复失败: ${res.status}`
+      )
     }
+
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -283,7 +229,7 @@ export const runApi = {
 
 export const sandboxApi = {
   list: () =>
-    request<{ active: any[]; checkpointed: any[] }>('/api/sandboxes/'),
+    request<{ active: any[] }>('/api/sandboxes/'),
 }
 
 // 任务 - 后端返回 {tasks: [...]} 或数组，字段已补全
@@ -462,26 +408,6 @@ export const mcpApi = {
       method: 'POST',
       body: JSON.stringify({ name }),
     }),
-  tools: async () => {
-    const res = await request<any>('/api/mcp/tools')
-    // 后端返回 {tools: ["name1", ...]}，转成 Tool 对象
-    const names: string[] = res.tools || []
-    const tools: Tool[] = names.map((n: string) => ({
-      name: n,
-      description: 'MCP 工具',
-      input_schema: { type: 'object', properties: {} },
-    }))
-    return { tools }
-  },
-  reload: () => request<any>('/api/mcp/reload', { method: 'POST' }),
-  customList: () => request<Record<string, any>>('/api/mcp/custom'),
-  customCreate: (name: string, data: any) =>
-    request<any>('/api/mcp/custom', {
-      method: 'POST',
-      body: JSON.stringify({ name, ...data }),
-    }),
-  customDelete: (name: string) =>
-    request<any>(`/api/mcp/custom/${name}`, { method: 'DELETE' }),
 }
 
 // Skills

@@ -7,6 +7,10 @@
 
 import subprocess
 import shutil
+import os
+import platform
+import string
+import ctypes
 
 # 命令超时时间（秒）
 _TIMEOUT = 15
@@ -41,6 +45,26 @@ def run_service_status(service: str) -> str:
 
 def run_disk_usage() -> str:
     """检查磁盘空间使用情况（df -h）。"""
+    if os.name == "nt":
+        lines = ["Filesystem        Size        Used       Free      Use%"]
+        for drive in string.ascii_uppercase:
+            root = f"{drive}:\\"
+            if not os.path.exists(root):
+                continue
+            usage = shutil.disk_usage(root)
+            percent = (
+                usage.used / usage.total * 100
+                if usage.total
+                else 0
+            )
+            lines.append(
+                f"{root:<12} "
+                f"{format_bytes(usage.total):>10} "
+                f"{format_bytes(usage.used):>10} "
+                f"{format_bytes(usage.free):>10} "
+                f"{percent:>7.1f}%"
+            )
+        return "\n".join(lines)
     return _run_cmd(["df", "-h"])
 
 
@@ -50,6 +74,18 @@ def run_disk_usage() -> str:
 
 def run_system_info() -> str:
     """获取系统基本信息（uptime、uname、load average）。"""
+    if os.name == "nt":
+        uname = platform.uname()
+        return "\n".join([
+            "=== System ===",
+            f"Platform: {platform.platform()}",
+            f"Machine: {uname.machine}",
+            f"Processor: {platform.processor() or uname.processor}",
+            f"Python: {platform.python_version()}",
+            "",
+            "=== Boot / Load ===",
+            f"CPU logical cores: {os.cpu_count() or 0}",
+        ])
     parts = []
     # uptime
     uptime = _run_cmd(["uptime"])
@@ -66,17 +102,83 @@ def run_system_info() -> str:
 
 def run_memory_usage() -> str:
     """检查内存使用情况（free -h）。"""
+    if os.name == "nt":
+        class MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(MemoryStatusEx)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(
+            ctypes.byref(status)
+        ):
+            return "Error: unable to read Windows memory status"
+        used = status.ullTotalPhys - status.ullAvailPhys
+        return "\n".join([
+            "              total        used        free      used%",
+            f"Mem:    {format_bytes(status.ullTotalPhys):>12} "
+            f"{format_bytes(used):>12} "
+            f"{format_bytes(status.ullAvailPhys):>12} "
+            f"{status.dwMemoryLoad:>8}%",
+        ])
     return _run_cmd(["free", "-h"])
 
 
 def run_cpu_usage() -> str:
     """检查 CPU 使用情况（top 快照）。"""
+    if os.name == "nt":
+        result = _run_cmd(
+            ["wmic", "cpu", "get", "loadpercentage", "/value"]
+        )
+        if not result.startswith("Error"):
+            values = [
+                line.split("=", 1)[1].strip()
+                for line in result.splitlines()
+                if line.lower().startswith("loadpercentage=")
+            ]
+            values = [value for value in values if value]
+            if values:
+                return "CPU load (%): " + ", ".join(values)
+        result = _run_cmd([
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            (
+                "(Get-CimInstance Win32_Processor | "
+                "Measure-Object -Property LoadPercentage -Average).Average"
+            ),
+        ])
+        if not result.startswith("Error") and result not in {"", "(no output)"}:
+            return f"CPU load (%): {result}"
+        return (
+            f"CPU logical cores: {os.cpu_count() or 0}\n"
+            "Detailed CPU percentage is unavailable on this Windows system."
+        )
     # mpstat 优先，更精确
     mpstat = shutil.which("mpstat")
     if mpstat:
         return _run_cmd(["mpstat", "-P", "ALL", "1", "1"])
     # fallback 到 top
     return _run_cmd(["top", "-bn1"])
+
+
+def format_bytes(value: int) -> str:
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    size = float(value)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}TiB"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -90,7 +192,11 @@ def run_process_top(limit: int = 20) -> str:
         limit: 返回进程数量，默认 20
     """
     n = max(1, min(limit, 50))
-    return _run_cmd(["ps", "aux", "--sort=-%cpu", "--no-headers"])[:5000]
+    return _run_cmd([
+        "sh",
+        "-c",
+        f"ps aux --sort=-%cpu --no-headers | head -n {n}",
+    ])
 
 
 def run_process_search(name: str) -> str:

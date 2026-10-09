@@ -2,7 +2,7 @@
 
 from fastapi.testclient import TestClient
 
-from agent.audit import (
+from agent.observability.audit import (
     AuditStore,
     RESULT_BLOCKED,
     record_event,
@@ -11,7 +11,7 @@ from agent.audit import (
 
 def test_audit_store_redacts_sensitive_values(tmp_path, monkeypatch):
     path = tmp_path / "events.jsonl"
-    monkeypatch.setattr("agent.audit.AUDIT_EVENTS_PATH", path)
+    monkeypatch.setattr("agent.observability.audit.AUDIT_EVENTS_PATH", path)
 
     event = record_event(
         "tool.started",
@@ -32,7 +32,7 @@ def test_audit_store_redacts_sensitive_values(tmp_path, monkeypatch):
 
 def test_audit_store_filters_and_orders_run_trace(tmp_path, monkeypatch):
     path = tmp_path / "events.jsonl"
-    monkeypatch.setattr("agent.audit.AUDIT_EVENTS_PATH", path)
+    monkeypatch.setattr("agent.observability.audit.AUDIT_EVENTS_PATH", path)
     store = AuditStore(path)
     first = record_event(
         "run.started",
@@ -66,7 +66,7 @@ def test_audit_store_filters_and_orders_run_trace(tmp_path, monkeypatch):
 
 def test_audit_api_lists_events_and_timeline(tmp_path, monkeypatch):
     path = tmp_path / "events.jsonl"
-    monkeypatch.setattr("agent.audit.AUDIT_EVENTS_PATH", path)
+    monkeypatch.setattr("agent.observability.audit.AUDIT_EVENTS_PATH", path)
     record_event(
         "run.started",
         "started",

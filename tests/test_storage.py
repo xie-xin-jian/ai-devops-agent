@@ -3,8 +3,8 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
 
-from agent import memory
-from agent.storage import atomic_write_json
+from agent.memory import service as memory
+from agent.platform.storage import atomic_write_json
 
 
 def test_atomic_write_json_survives_concurrent_writers(tmp_path):
@@ -22,7 +22,7 @@ def test_atomic_write_json_survives_concurrent_writers(tmp_path):
 
 
 def test_memory_instances_do_not_overwrite_each_other(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     first = memory.MemorySystem()
     second = memory.MemorySystem()
 

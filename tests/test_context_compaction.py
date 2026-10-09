@@ -3,7 +3,13 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
-from agent import comprehensive, context_compact, error_recovery
+from agent.core import comprehensive, context_compact, error_recovery
+from agent.core import pipeline
+from agent.platform.identity import system_admin_principal
+from agent.sandbox.manager import SandboxManager
+from agent.tools.executor import ToolExecutor
+from agent.tools.registry import ToolRegistry
+from agent.tools.policy import ToolPolicyContext
 
 
 def test_compact_waits_for_tool_result_pair(monkeypatch):
@@ -14,8 +20,16 @@ def test_compact_waits_for_tool_result_pair(monkeypatch):
     agent.messages = []
     agent._last_user_query = ""
     agent._pending_compaction = False
-    agent.tools = []
-    agent.handlers = {}
+    agent.principal = system_admin_principal()
+    agent.tool_context = ToolPolicyContext()
+    agent.tool_registry = ToolRegistry.builtin()
+    agent.sandbox_manager = SandboxManager()
+    agent.tool_executor = ToolExecutor(
+        agent.tool_registry,
+        sandbox_manager=agent.sandbox_manager,
+        principal=agent.principal,
+        tool_context=agent.tool_context,
+    )
     agent._add_compact_tool()
 
     compact_block = SimpleNamespace(
@@ -35,9 +49,9 @@ def test_compact_waits_for_tool_result_pair(monkeypatch):
         observed_history.append(deepcopy(messages))
         return [{"role": "user", "content": "[Compacted]\n\nsummary"}]
 
-    monkeypatch.setattr(comprehensive, "trigger_hooks", lambda *args: None)
-    monkeypatch.setattr(comprehensive, "collect_background_results", lambda: [])
-    monkeypatch.setattr(comprehensive, "compact_history", fake_compact_history)
+    monkeypatch.setattr(pipeline, "trigger_hooks", lambda *args: None)
+    monkeypatch.setattr(pipeline, "collect_background_results", lambda: [])
+    monkeypatch.setattr(pipeline, "compact_history", fake_compact_history)
     monkeypatch.setattr(agent, "_compact_if_needed", lambda messages: messages)
     monkeypatch.setattr(agent, "_call_api", lambda messages: next(responses))
 
@@ -144,8 +158,6 @@ def test_agent_retries_once_after_context_recovery(monkeypatch):
     agent.messages = []
     agent._last_user_query = ""
     agent._pending_compaction = False
-    agent.tools = []
-    agent.handlers = {}
     calls = 0
 
     def fake_call_api(messages):
@@ -163,9 +175,9 @@ def test_agent_retries_once_after_context_recovery(monkeypatch):
             {"before": 1000, "after": 100, "reduced": True},
         )
 
-    monkeypatch.setattr(comprehensive, "trigger_hooks", lambda *args: None)
-    monkeypatch.setattr(comprehensive, "collect_background_results", lambda: [])
-    monkeypatch.setattr(comprehensive, "recover_context_overflow", fake_recover)
+    monkeypatch.setattr(pipeline, "trigger_hooks", lambda *args: None)
+    monkeypatch.setattr(pipeline, "collect_background_results", lambda: [])
+    monkeypatch.setattr(pipeline, "recover_context_overflow", fake_recover)
     monkeypatch.setattr(agent, "_compact_if_needed", lambda messages: messages)
     monkeypatch.setattr(agent, "_call_api", fake_call_api)
 

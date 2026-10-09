@@ -1,14 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Box, HardDrive, RefreshCw, type LucideIcon } from 'lucide-react'
+import { Box, RefreshCw, type LucideIcon } from 'lucide-react'
 import { sandboxApi } from '../api'
 import Badge from '../components/Badge'
 import Button from '../components/Button'
 
 export default function Sandboxes() {
-  const [data, setData] = useState<{ active: any[]; checkpointed: any[] }>({
-    active: [],
-    checkpointed: [],
-  })
+  const [data, setData] = useState<{ active: any[] }>({ active: [] })
   const [loading, setLoading] = useState(false)
 
   const load = async () => {
@@ -31,7 +28,7 @@ export default function Sandboxes() {
       <div className="mx-auto max-w-6xl">
         <div className="mb-5 flex items-center justify-between">
           <p className="text-sm text-text-secondary">
-            活动容器 {data.active.length} · Checkpoint 工作区 {data.checkpointed.length}
+            活动容器 {data.active.length}
           </p>
           <Button variant="secondary" onClick={load} disabled={loading}>
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
@@ -48,26 +45,9 @@ export default function Sandboxes() {
             <SandboxRow
               key={item.run_id}
               item={item}
-              type="active"
             />
           )}
         />
-
-        <div className="mt-6">
-          <Section
-            title="Checkpoint 工作区"
-            icon={HardDrive}
-            empty="没有持久化工作区引用"
-            items={data.checkpointed}
-            render={(item) => (
-              <SandboxRow
-                key={`${item.run_id}-${item.workspace_host_path}`}
-                item={item}
-                type="checkpointed"
-              />
-            )}
-          />
-        </div>
       </div>
     </div>
   )
@@ -116,7 +96,7 @@ function Section({
   )
 }
 
-function SandboxRow({ item, type }: { item: any; type: 'active' | 'checkpointed' }) {
+function SandboxRow({ item }: { item: any }) {
   return (
     <tr className="border-b border-border-secondary last:border-0">
       <td className="px-4 py-3 font-mono text-xs">{item.run_id}</td>
@@ -127,7 +107,7 @@ function SandboxRow({ item, type }: { item: any; type: 'active' | 'checkpointed'
         </div>
       </td>
       <td className="px-4 py-3">
-        <Badge variant={type === 'active' ? 'info' : 'default'}>
+        <Badge variant="info">
           {item.status}
         </Badge>
       </td>

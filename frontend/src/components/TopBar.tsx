@@ -1,4 +1,4 @@
-import { Moon, Sun, RotateCcw, Trash2 } from 'lucide-react'
+import { Moon, Sun, RotateCcw } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 
 export default function TopBar({ title }: { title: string }) {

@@ -7,7 +7,7 @@ from api.schemas import (
     MCPSseConnectRequest,
     MCPStdioConnectRequest,
 )
-from agent.mcp import (
+from agent.mcp.client import (
     connect_mcp,
     disconnect_mcp,
     list_connected_mcp,
@@ -24,7 +24,7 @@ from agent.mcp import (
     disconnect_sse_mcp,
     list_sse_mcp_servers,
 )
-from agent.rbac import MCP_CONNECT, MCP_VIEW, Principal
+from agent.platform.identity import MCP_CONNECT, MCP_VIEW, Principal
 from api.auth import require_permissions
 
 router = APIRouter()

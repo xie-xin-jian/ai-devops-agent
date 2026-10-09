@@ -1,10 +1,8 @@
 """FastAPI 入口 - DevOps Agent API"""
 
 import sys
-import uuid
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -14,21 +12,37 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
-from agent.comprehensive import ComprehensiveAgent
-from agent.config import WORKDIR, ALLOWED_ORIGINS
+from agent.core.comprehensive import ComprehensiveAgent
+from agent.platform.config import WORKDIR, ALLOWED_ORIGINS
+from agent.sessions.manager import (
+    SessionAccessError,
+    SessionManager,
+)
+from agent.sessions.state_store import RecoveryStore
 from .auth import (
     BearerAuthMiddleware,
     get_request_principal,
     require_permissions,
 )
 from .schemas import CancelRequest, ChatRequest, SessionRequest
-from agent.rbac import AGENT_CHAT, SESSION_MANAGE, Principal, system_admin_principal
+from agent.platform.identity import AGENT_CHAT, Principal, system_admin_principal
+from .routes.task import router as task_router
+from .routes.cron_route import router as cron_router
+from .routes.mcp_route import router as mcp_router
+from .routes.skill_route import router as skill_router
+from .routes.action_route import router as action_router
+from .routes.audit_route import router as audit_router
+from .routes.memory_route import router as memory_router
+from .routes.recovery_route import router as recovery_router
+from .routes.sandbox_route import router as sandbox_router
 
 
 @asynccontextmanager
 async def lifespan(_app):
     """Start background services as soon as the API process starts."""
+    _recover_startup_state()
     _ensure_cron_started()
     yield
 
@@ -49,13 +63,74 @@ app.add_middleware(
     expose_headers=["session-id"],
 )
 
-# Session 管理：每个 session 拥有独立的 Agent 实例，避免多用户串话
-_sessions: dict[str, dict] = {}
-_SESSION_TTL = timedelta(hours=2)
+_session_manager = SessionManager()
 
 # Cron 调度线程全局只启动一次，避免多 session 重复启动
 _cron_started = False
 _cron_start_lock = threading.Lock()
+
+
+def _recover_startup_state():
+    """Reconcile durable state after an unclean process restart."""
+    from agent.observability.audit import record_event
+    from agent.orchestration.background import recover_interrupted_background_tasks
+    from agent.orchestration.pending_actions import PendingActionStore
+    from agent.sandbox.manager import cleanup_orphan_sandboxes
+
+    reason = "process restarted while the operation was still running"
+    store = RecoveryStore()
+    for run in store.interrupt_stale_runs(reason):
+        record_event(
+            "run.interrupted",
+            f"Run interrupted: {run.get('run_id', '')}",
+            summary=reason,
+            result="failed",
+            severity="high",
+            actor=str(run.get("owner_id") or "system"),
+            session_id=str(run.get("session_id") or ""),
+            run_id=str(run.get("run_id") or ""),
+            correlation_id=str(run.get("run_id") or ""),
+            payload={
+                "phase": run.get("phase", ""),
+                "active_tool": run.get("active_tool", ""),
+                "safe_to_resume": bool(run.get("safe_to_resume")),
+                "reason": reason,
+            },
+        )
+
+    recover_interrupted_background_tasks(reason)
+
+    action_store = PendingActionStore()
+    for action in action_store.recover_interrupted(reason):
+        record_event(
+            "pending_action.interrupted",
+            f"Pending action interrupted: {action.id}",
+            summary=reason,
+            result="failed",
+            severity="high",
+            actor="system",
+            session_id=action.session_id,
+            action_id=action.id,
+            action_code=action.action_code,
+            correlation_id=action.id,
+            payload={"reason": reason},
+        )
+
+    cleanup = cleanup_orphan_sandboxes()
+    if (
+        cleanup["containers_removed"]
+        or cleanup["workspaces_removed"]
+        or cleanup["errors"]
+    ):
+        record_event(
+            "recovery.orphans_cleaned",
+            "Recovered orphaned Sandbox resources",
+            result="failed" if cleanup["errors"] else "success",
+            severity="high" if cleanup["errors"] else "info",
+            actor="system",
+            correlation_id="startup-recovery",
+            payload=cleanup,
+        )
 
 
 def _ensure_cron_started():
@@ -66,20 +141,11 @@ def _ensure_cron_started():
     with _cron_start_lock:
         if _cron_started:
             return
-        from agent.cron import cron_scheduler_loop, load_durable_jobs
+        from agent.orchestration.cron import cron_scheduler_loop, load_durable_jobs
         load_durable_jobs()
         t = threading.Thread(target=cron_scheduler_loop, daemon=True)
         t.start()
         _cron_started = True
-
-
-def _cleanup_expired_sessions():
-    """清理超过 TTL 未使用的 session。"""
-    now = datetime.now()
-    expired = [sid for sid, data in _sessions.items()
-               if now - data["last_used"] > _SESSION_TTL]
-    for sid in expired:
-        _sessions.pop(sid, None)
 
 
 def get_or_create_session(
@@ -89,54 +155,21 @@ def get_or_create_session(
     """获取或创建 session，返回 (session_id, session_state)。"""
     principal = principal or system_admin_principal()
     _ensure_cron_started()
-    _cleanup_expired_sessions()
-    if session_id and session_id in _sessions:
-        session = _sessions[session_id]
-        if (
-            session.get("owner_id")
-            and session["owner_id"] != principal.id
-            and not principal.has(SESSION_MANAGE)
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail="Session belongs to another user",
-            )
-        session["last_used"] = datetime.now()
-        return session_id, session
-    new_id = session_id or str(uuid.uuid4())
-    from agent.mcp import load_all_custom_servers
-    load_all_custom_servers()
-    agent = ComprehensiveAgent(
-        session_id=new_id,
-        principal=principal,
-    )
-    session = {
-        "agent": agent,
-        "owner_id": principal.id,
-        "last_used": datetime.now(),
-        "cancel_event": threading.Event(),
-        "run_lock": threading.Lock(),
-    }
-    _sessions[new_id] = session
-    from agent.audit import record_event
-    record_event(
-        "session.created",
-        "Agent session created",
-        result="success",
-        severity="info",
-        actor=principal.id,
-        session_id=new_id,
-        correlation_id=new_id,
-        payload={"roles": sorted(principal.roles)},
-    )
-    return new_id, session
+    try:
+        return _session_manager.get_or_create(
+            session_id,
+            principal,
+        )
+    except SessionAccessError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=str(exc),
+        ) from exc
 
 
 def _run_agent_sync(session: dict, message: str) -> str:
     """Run one chat turn under the session's cancellation and concurrency guard."""
-    with session["run_lock"]:
-        session["cancel_event"].clear()
-        return session["agent"].run(message, session["cancel_event"])
+    return _session_manager.run_sync(session, message)
 
 
 @app.get("/")
@@ -154,26 +187,24 @@ async def list_tools(
     _principal: Principal = Depends(require_permissions(AGENT_CHAT)),
 ):
     """列出所有可用工具（内置 + Agent 注册 + MCP），不依赖 session。"""
-    from agent.mcp import get_mcp_tool_names
-    from agent.tool_policy import get_policy_catalog
-    builtin = [tool["name"] for tool in ComprehensiveAgent.get_tool_catalog()]
-    names = builtin + get_mcp_tool_names()
+    from agent.mcp.client import get_mcp_tool_names
+    from agent.tools.policy import get_tool_policy
+
+    registry = ComprehensiveAgent.get_tool_registry()
+    mcp_names = get_mcp_tool_names()
+    names = registry.names() + mcp_names
+    policies = {
+        policy.name: policy.to_dict()
+        for policy in registry.policies()
+    }
+    policies.update({
+        name: get_tool_policy(name).to_dict()
+        for name in mcp_names
+    })
     return {
         "tools": names,
-        "policies": {
-            policy["name"]: policy
-            for policy in get_policy_catalog(names)
-        },
+        "policies": policies,
     }
-
-
-@app.get("/actions")
-async def list_actions(
-    _principal: Principal = Depends(require_permissions(AGENT_CHAT)),
-):
-    """List the deterministic action routes available to the Agent."""
-    from agent.action_router import get_action_catalog
-    return {"actions": get_action_catalog()}
 
 
 @app.post("/api/chat/")
@@ -230,19 +261,18 @@ async def cancel_chat(
     payload: CancelRequest,
     principal: Principal = Depends(get_request_principal),
 ):
-    session = _sessions.get(payload.session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if (
-        session.get("owner_id")
-        and session["owner_id"] != principal.id
-        and not principal.has(SESSION_MANAGE)
-    ):
+    try:
+        _session_manager.cancel(payload.session_id, principal)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found",
+        ) from exc
+    except SessionAccessError as exc:
         raise HTTPException(
             status_code=403,
-            detail="Session belongs to another user",
-        )
-    session["cancel_event"].set()
+            detail=str(exc),
+        ) from exc
     return {"status": "cancelling"}
 
 
@@ -251,20 +281,12 @@ async def get_messages(
     session_id: str = "",
     principal: Principal = Depends(get_request_principal),
 ):
-    if not session_id or session_id not in _sessions:
+    if not session_id:
         return {"messages": []}
-    from agent.messages import serialize_visible_messages
-    session = _sessions[session_id]
-    if (
-        session.get("owner_id")
-        and session["owner_id"] != principal.id
-        and not principal.has(SESSION_MANAGE)
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Session belongs to another user",
-        )
-    session["last_used"] = datetime.now()
+    from agent.sessions.messages import serialize_visible_messages
+    if not _session_manager.exists(session_id):
+        return {"messages": []}
+    _, session = get_or_create_session(session_id, principal)
     agent = session["agent"]
     return {"messages": serialize_visible_messages(agent.get_messages())}
 
@@ -273,37 +295,9 @@ async def get_messages(
 async def list_chat_sessions(
     principal: Principal = Depends(get_request_principal),
 ):
-    from agent.messages import serialize_visible_messages
-
-    sessions = []
-    for sid, session in _sessions.items():
-        if (
-            session.get("owner_id")
-            and session["owner_id"] != principal.id
-            and not principal.has(SESSION_MANAGE)
-        ):
-            continue
-        agent = session["agent"]
-        visible = serialize_visible_messages(agent.get_messages())
-        first_user = next(
-            (
-                item.get("content", "")
-                for item in visible
-                if item.get("role") == "user"
-            ),
-            "",
-        )
-        sessions.append({
-            "id": sid,
-            "title": first_user[:32] or "新对话",
-            "updated_at": session["last_used"].timestamp(),
-            "message_count": len(visible),
-        })
-    sessions.sort(
-        key=lambda item: item["updated_at"],
-        reverse=True,
-    )
-    return {"sessions": sessions}
+    return {
+        "sessions": _session_manager.list_sessions(principal)
+    }
 
 
 @app.post("/api/reset/")
@@ -312,41 +306,17 @@ async def reset(
     principal: Principal = Depends(get_request_principal),
 ):
     session_id = payload.session_id if payload else None
-    if session_id and session_id in _sessions:
-        session = _sessions[session_id]
-        if (
-            session.get("owner_id")
-            and session["owner_id"] != principal.id
-            and not principal.has(SESSION_MANAGE)
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail="Session belongs to another user",
-            )
-        session["agent"].reset()
-        from agent.audit import record_event
-        record_event(
-            "session.reset",
-            "Agent session reset",
-            result="success",
-            severity="info",
-            actor=principal.id,
-            session_id=session_id,
-            correlation_id=session_id,
-        )
+    if not session_id:
+        return {"status": "reset"}
+    try:
+        _session_manager.reset(session_id, principal)
+    except SessionAccessError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=str(exc),
+        ) from exc
     return {"status": "reset"}
 
-
-from .routes.task import router as task_router
-from .routes.cron_route import router as cron_router
-from .routes.mcp_route import router as mcp_router
-from .routes.skill_route import router as skill_router
-from .routes.action_route import router as action_router
-from .routes.audit_route import router as audit_router
-from .routes.rbac_route import router as rbac_router
-from .routes.memory_route import router as memory_router
-from .routes.run_route import router as run_router
-from .routes.sandbox_route import router as sandbox_router
 
 app.include_router(task_router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(cron_router, prefix="/api/cron", tags=["cron"])
@@ -354,13 +324,15 @@ app.include_router(mcp_router, prefix="/api/mcp", tags=["mcp"])
 app.include_router(skill_router)
 app.include_router(action_router, prefix="/api/actions", tags=["actions"])
 app.include_router(audit_router, prefix="/api/audit", tags=["audit"])
-app.include_router(rbac_router, prefix="/api/rbac", tags=["rbac"])
 app.include_router(memory_router, prefix="/api/memory", tags=["memory"])
-app.include_router(run_router, prefix="/api/runs", tags=["runs"])
+app.include_router(
+    recovery_router,
+    prefix="/api/recovery",
+    tags=["recovery"],
+)
 app.include_router(sandbox_router, prefix="/api/sandboxes", tags=["sandboxes"])
 
 # 挂载前端静态文件
-from fastapi.staticfiles import StaticFiles
 _static_dir = Path(__file__).parent.parent / "static"
 if _static_dir.exists():
     app.mount("/ui", StaticFiles(directory=str(_static_dir), html=True), name="ui")

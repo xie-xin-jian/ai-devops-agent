@@ -1,21 +1,27 @@
 """Docker sandbox lifecycle and isolation tests."""
 
-import threading
 import time
 import sys
 from types import SimpleNamespace
 
 import pytest
 
-from agent import comprehensive, config
-from agent.sandbox import (
+from agent.core import comprehensive
+from agent.platform import config
+from agent.core import pipeline
+from agent.sandbox.manager import (
+    cleanup_orphan_sandboxes,
     DockerBackend,
     SandboxError,
     SandboxManager,
     SandboxTimeout,
     SandboxUnavailable,
 )
-from agent.sandbox import list_sandbox_sessions
+from agent.sandbox.manager import list_sandbox_sessions
+from agent.orchestration.pending_actions import PendingActionStore
+from agent.platform.identity import system_admin_principal
+from agent.tools.executor import ToolExecutor
+from agent.tools.registry import ToolRegistry
 
 
 class FakeContainerHandle:
@@ -184,7 +190,7 @@ def test_docker_backend_uses_hardened_container_options(
     assert "/var/run/docker.sock" not in str(captured["volumes"])
 
 
-def test_agent_uses_sandbox_instead_of_host_bash(
+def test_agent_requires_approval_before_sandbox_bash(
     tmp_path,
     monkeypatch,
 ):
@@ -198,14 +204,23 @@ def test_agent_uses_sandbox_instead_of_host_bash(
         enabled=True,
     )
     agent = object.__new__(comprehensive.ComprehensiveAgent)
-    agent.current_action = None
     agent.current_run_id = "run-agent"
+    agent.session_id = "session-agent"
+    agent.principal = system_admin_principal()
+    agent.pending_action_store = PendingActionStore(
+        tmp_path / "agent-actions.json"
+    )
+    agent._pending_action_notifications = []
+    agent._last_user_query = "echo sandboxed"
     agent.tool_context = None
     agent.audit_enabled = False
     agent.sandbox_manager = manager
-    agent.sandbox_session = None
-    agent.tools = []
-    agent.handlers = {}
+    agent.tool_registry = ToolRegistry.builtin()
+    agent.tool_executor = ToolExecutor(
+        agent.tool_registry,
+        sandbox_manager=manager,
+        principal=agent.principal,
+    )
 
     monkeypatch.setattr(
         "agent.tools.shell.run_bash",
@@ -220,32 +235,25 @@ def test_agent_uses_sandbox_instead_of_host_bash(
             input={"command": "echo sandboxed"},
         )
     )
+    monkeypatch.setattr(pipeline, "trigger_hooks", lambda *args: None)
 
-    assert "sandboxed" in output
-    assert len(handle.exec_calls) == 1
+    assert output.startswith("Approval required")
+    assert handle.exec_calls == []
+    assert agent.pending_action_store.list()[0].payload["tool"] == "bash"
 
 
-def test_sandbox_unavailable_never_falls_back_to_host(
+def test_approved_bash_never_falls_back_to_host_when_sandbox_unavailable(
     tmp_path,
     monkeypatch,
 ):
-    source = tmp_path / "source"
-    source.mkdir()
-    monkeypatch.setattr(comprehensive, "WORKDIR", source)
-    manager = SandboxManager(
-        backend=FakeSandboxBackend(available=False),
-        base_dir=tmp_path / "sandboxes",
-        enabled=True,
-    )
-    agent = object.__new__(comprehensive.ComprehensiveAgent)
-    agent.current_action = None
-    agent.current_run_id = "run-denied"
-    agent.tool_context = None
-    agent.audit_enabled = False
-    agent.sandbox_manager = manager
-    agent.sandbox_session = None
-    agent.tools = []
-    agent.handlers = {}
+    from agent.orchestration import pending_executor as pending_action_executor
+
+    class UnavailableSandboxManager:
+        def create(self, run_id, **kwargs):
+            raise SandboxUnavailable("Docker unavailable")
+
+        def cleanup(self, run_id):
+            pass
 
     monkeypatch.setattr(
         "agent.tools.shell.run_bash",
@@ -253,18 +261,27 @@ def test_sandbox_unavailable_never_falls_back_to_host(
             AssertionError("host bash must not run")
         ),
     )
-
-    output = agent._handle_tool_call(
-        SimpleNamespace(
-            name="bash",
-            input={"command": "echo should-not-run"},
-        )
+    monkeypatch.setattr(
+        pending_action_executor,
+        "SandboxManager",
+        UnavailableSandboxManager,
     )
 
-    assert output.startswith("Error: Docker sandbox unavailable")
+    action = SimpleNamespace(
+        id="act_denied",
+        steps=[{
+            "tool": "bash",
+            "input": {"command": "echo should-not-run"},
+        }],
+    )
+    with pytest.raises(SandboxUnavailable, match="Docker unavailable"):
+        pending_action_executor.execute_pending_action(
+            action,
+            system_admin_principal(),
+        )
 
 
-def test_sandbox_status_api_lists_active_and_checkpointed(
+def test_sandbox_status_api_lists_active_sessions(
     tmp_path,
     monkeypatch,
 ):
@@ -284,11 +301,6 @@ def test_sandbox_status_api_lists_active_and_checkpointed(
             "created_at": 1.0,
         }],
     )
-    monkeypatch.setattr(
-        "agent.run_checkpoint.RUNS_DIR",
-        tmp_path / "runs",
-    )
-
     from api.main import app
     client = TestClient(app)
     response = client.get("/api/sandboxes/")
@@ -318,3 +330,27 @@ def test_list_sandbox_sessions_uses_registry(tmp_path):
         for item in sessions
     )
     manager.cleanup("run-registry")
+
+
+def test_cleanup_orphan_sandboxes_removes_containers_and_workspaces(
+    tmp_path,
+):
+    base_dir = tmp_path / ".sandboxes"
+    (base_dir / "run-1").mkdir(parents=True)
+    (base_dir / "run-1" / "file.txt").write_text("orphan", encoding="utf-8")
+
+    class FakeRecoveryBackend:
+        def ping(self):
+            return True
+
+        def remove_managed_containers(self):
+            return 2
+
+    result = cleanup_orphan_sandboxes(
+        backend=FakeRecoveryBackend(),
+        base_dir=base_dir,
+    )
+
+    assert result["containers_removed"] == 2
+    assert result["workspaces_removed"] == 1
+    assert list(base_dir.iterdir()) == []

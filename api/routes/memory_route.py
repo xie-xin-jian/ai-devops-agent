@@ -2,14 +2,14 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from agent.audit import (
+from agent.observability.audit import (
     RESULT_SUCCESS,
     SEVERITY_INFO,
     record_event,
 )
-from agent.memory import MemorySystem
-from agent.memory_policy import can_manage_record, can_read_scope
-from agent.rbac import (
+from agent.memory.service import MemorySystem
+from agent.memory.policy import can_manage_record, can_read_scope
+from agent.platform.identity import (
     ACTION_APPROVE,
     MEMORY_MANAGE,
     MEMORY_READ,

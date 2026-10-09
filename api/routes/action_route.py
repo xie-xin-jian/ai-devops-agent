@@ -1,19 +1,22 @@
-"""Pending action and preflight API routes."""
+"""Pending action API routes."""
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
-from agent.rbac import (
+from agent.platform.identity import (
     ACTION_APPROVE,
     AGENT_CHAT,
     AUDIT_VIEW,
     SESSION_MANAGE,
     Principal,
 )
-from agent.pending_actions import (
+from agent.orchestration.pending_actions import (
     PendingActionStore,
-    get_action_preflight_contract,
+    STATUS_EXECUTED,
+    STATUS_FAILED,
 )
-from agent.audit import (
+from agent.orchestration.pending_executor import execute_pending_action
+from agent.observability.audit import (
     RESULT_CANCELED,
     RESULT_SUCCESS,
     SEVERITY_INFO,
@@ -33,22 +36,6 @@ def _can_access_action(principal: Principal, action) -> bool:
     if principal.has(SESSION_MANAGE) or principal.has(AUDIT_VIEW):
         return True
     return bool(action.owner_id and action.owner_id == principal.id)
-
-
-@router.get("/preflight/{action_code}")
-async def action_preflight(
-    action_code: str,
-    message: str = "",
-    _principal: Principal = Depends(require_permissions(AGENT_CHAT)),
-):
-    try:
-        result = get_action_preflight_contract(
-            action_code,
-            {"source_message": message},
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return result.to_dict()
 
 
 @router.get("/pending")
@@ -100,6 +87,31 @@ async def confirm_pending_action(
         if not _can_access_action(principal, current):
             raise HTTPException(status_code=403, detail="Permission denied")
         action = store.confirm(action_id, actor=actor)
+        try:
+            result = await run_in_threadpool(
+                execute_pending_action,
+                action,
+                principal,
+            )
+            action = store.finish(
+                action_id,
+                status=(
+                    STATUS_EXECUTED
+                    if result.get("success")
+                    else STATUS_FAILED
+                ),
+                result_payload=result,
+            )
+        except Exception as exc:
+            action = store.finish(
+                action_id,
+                status=STATUS_FAILED,
+                result_payload={
+                    "execution_enabled": True,
+                    "success": False,
+                    "error": str(exc),
+                },
+            )
     except HTTPException:
         raise
     except KeyError as exc:
@@ -109,12 +121,27 @@ async def confirm_pending_action(
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if action.status == STATUS_EXECUTED:
+        event_type = "pending_action.executed"
+        event_title = f"Pending action executed: {action_id}"
+        event_result = RESULT_SUCCESS
+        event_severity = SEVERITY_INFO
+    elif action.status == STATUS_FAILED:
+        event_type = "pending_action.execution_failed"
+        event_title = f"Pending action execution failed: {action_id}"
+        event_result = "failed"
+        event_severity = "high"
+    else:
+        event_type = "pending_action.confirmed"
+        event_title = f"Pending action confirmed: {action_id}"
+        event_result = RESULT_SUCCESS
+        event_severity = SEVERITY_INFO
     record_event(
-        "pending_action.confirmed",
-        f"Pending action confirmed: {action_id}",
+        event_type,
+        event_title,
         summary=action.summary,
-        result=RESULT_SUCCESS,
-        severity=SEVERITY_INFO,
+        result=event_result,
+        severity=event_severity,
         actor=actor,
         session_id=action.session_id,
         action_id=action.id,
@@ -123,7 +150,10 @@ async def confirm_pending_action(
         correlation_id=action.id,
         payload={
             "confirmed_at": action.confirmed_at,
-            "execution_enabled": False,
+            "execution_enabled": bool(
+                action.result_payload.get("execution_enabled")
+            ),
+            "success": action.result_payload.get("success"),
         },
     )
     return action.to_dict()

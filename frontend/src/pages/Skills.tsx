@@ -1,23 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { BookOpen, RefreshCw, ArrowLeft, Sparkles } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import Button from '../components/Button'
 
 export default function Skills() {
   const { skills, selectedSkill, fetchSkills, fetchSkillDetail, clearSelectedSkill } = useAppStore()
-  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     fetchSkills()
   }, [fetchSkills])
 
   const handleSelect = async (name: string) => {
-    setLoading(true)
-    try {
-      await fetchSkillDetail(name)
-    } finally {
-      setLoading(false)
-    }
+    await fetchSkillDetail(name)
   }
 
   const handleBack = () => {

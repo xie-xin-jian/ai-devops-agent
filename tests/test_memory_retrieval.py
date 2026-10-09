@@ -1,10 +1,12 @@
 """Retrieval quality regression tests for long-term memory."""
 
-from agent import comprehensive, memory
+from agent.core import comprehensive
+from agent.memory import service as memory
+from agent.tools.registry import ToolRegistry
 
 
 def _build_memory_system(tmp_path, monkeypatch) -> memory.MemorySystem:
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     system.add(
         "Nginx 502，上游 PHP-FPM 未监听",
@@ -87,7 +89,7 @@ def test_retrieval_respects_scope(tmp_path, monkeypatch):
 
 
 def test_relevance_gate_ignores_high_importance_noise(tmp_path, monkeypatch):
-    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     system.add(
         "公司年会在三月举办",
@@ -103,8 +105,7 @@ def test_memory_tools_default_to_agent_scope(tmp_path, monkeypatch):
     agent = object.__new__(comprehensive.ComprehensiveAgent)
     agent.memory = system
     agent.memory_scope = "project:a"
-    agent.tools = []
-    agent.handlers = {}
+    agent.tool_registry = ToolRegistry.builtin()
     agent._add_memory_tools()
 
     result = agent.handlers["search_memory"]("Apache")
@@ -124,7 +125,7 @@ def test_system_prompt_uses_agent_scope(tmp_path, monkeypatch):
     agent = object.__new__(comprehensive.ComprehensiveAgent)
     agent.memory = system
     agent.memory_scope = "project:a"
-    agent.tools = []
+    agent.tool_registry = ToolRegistry.builtin()
     agent._last_user_query = "Apache"
 
     prompt = agent._build_system_prompt()

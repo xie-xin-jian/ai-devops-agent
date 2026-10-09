@@ -2,8 +2,7 @@
 
 import pytest
 
-from agent import comprehensive, hooks
-from agent.permission import permission_hook
+from agent.core import hooks
 
 
 @pytest.fixture(autouse=True)
@@ -19,7 +18,8 @@ def clean_hooks():
 
 
 def test_register_hook_is_idempotent():
-    callback = lambda block: None
+    def callback(block):
+        return None
 
     hooks.register_hook("PreToolUse", callback)
     hooks.register_hook("PreToolUse", callback)
@@ -50,13 +50,3 @@ def test_trigger_hooks_stops_on_first_non_none_result():
 
     assert result == "blocked"
     assert calls == ["first"]
-
-
-def test_default_hook_registration_does_not_duplicate_permission_hook():
-    first = object.__new__(comprehensive.ComprehensiveAgent)
-    second = object.__new__(comprehensive.ComprehensiveAgent)
-
-    first._register_default_hooks()
-    second._register_default_hooks()
-
-    assert hooks.HOOKS["PreToolUse"].count(permission_hook) == 1

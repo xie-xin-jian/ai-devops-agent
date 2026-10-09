@@ -33,7 +33,6 @@ export default function Chat() {
     currentTurn,
     sessionId,
     chatSessions,
-    activeAction,
     newChat,
     switchChat,
     deleteChat,
@@ -141,11 +140,6 @@ export default function Chat() {
                 {sessionId ? shortId(sessionId) : '尚未创建 Session'}
               </div>
             </div>
-            {activeAction && (
-              <Badge variant={activeAction.requires_approval ? 'warning' : 'info'}>
-                {activeAction.display_name}
-              </Badge>
-            )}
           </div>
           <div className="text-xs text-text-tertiary">
             {isStreaming ? '运行中' : '就绪'}
