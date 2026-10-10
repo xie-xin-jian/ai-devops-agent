@@ -8,6 +8,7 @@ import {
 import { actionApi } from '../api'
 import Badge from '../components/Badge'
 import Button from '../components/Button'
+import { useAppStore } from '../store/useAppStore'
 
 export default function PendingActions() {
   const [actions, setActions] = useState<any[]>([])
@@ -34,12 +35,22 @@ export default function PendingActions() {
     return () => clearInterval(timer)
   }, [])
 
-  const decide = async (id: string, decision: 'confirm' | 'cancel') => {
+  const decide = async (action: any, decision: 'confirm' | 'cancel') => {
+    const id = action.id
     setBusyId(id)
     setError('')
     try {
       if (decision === 'confirm') {
-        await actionApi.confirm(id)
+        const result = await actionApi.confirm(id)
+        if (
+          action.session_id
+          && useAppStore.getState().sessionId === action.session_id
+        ) {
+          await useAppStore.getState().fetchMessages()
+        }
+        if (result?.result_payload?.continuation_error) {
+          setError(`命令已执行，但 Agent 未能继续：${result.result_payload.continuation_error}`)
+        }
       } else {
         await actionApi.cancel(id, 'api-user', 'Rejected from UI')
       }
@@ -144,7 +155,7 @@ export default function PendingActions() {
                       <Button
                         size="sm"
                         variant="secondary"
-                        onClick={() => decide(action.id, 'cancel')}
+                        onClick={() => decide(action, 'cancel')}
                         disabled={busyId === action.id}
                       >
                         <X size={14} />
@@ -152,7 +163,7 @@ export default function PendingActions() {
                       </Button>
                       <Button
                         size="sm"
-                        onClick={() => decide(action.id, 'confirm')}
+                        onClick={() => decide(action, 'confirm')}
                         disabled={busyId === action.id}
                       >
                         <Check size={14} />
@@ -174,6 +185,16 @@ export default function PendingActions() {
                     {action.result_payload?.error && (
                       <div className="mt-3 rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-2 text-xs text-status-error">
                         {action.result_payload.error}
+                      </div>
+                    )}
+                    {action.result_payload?.assistant_response && (
+                      <div className="mt-3 rounded-lg border border-accent-primary/20 bg-accent-soft px-3 py-2">
+                        <div className="mb-1 text-xs font-medium text-accent-primary">
+                          Agent 继续处理结果
+                        </div>
+                        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words text-xs text-text-secondary">
+                          {action.result_payload.assistant_response}
+                        </pre>
                       </div>
                     )}
                 </div>

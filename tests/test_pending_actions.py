@@ -49,11 +49,15 @@ def test_pending_action_store_lifecycle(tmp_path):
         "bash",
         {"command": "echo hello"},
         session_id="session-1",
+        run_id="run-1",
+        tool_use_id="call-1",
         owner_id="system",
         summary="执行命令: echo hello",
     )
 
     assert store.get(record.id).status == "pending"
+    assert store.get(record.id).run_id == "run-1"
+    assert store.get(record.id).tool_use_id == "call-1"
     assert store.list(session_id="session-1")[0].id == record.id
 
     confirmed = store.confirm(record.id, actor="tester")
@@ -163,6 +167,7 @@ def test_bash_creates_pending_action_without_executing(
         "tool": "bash",
         "input": {"command": "echo hello"},
     }
+    assert actions[0].run_id == "run-test"
     assert agent._pending_action_notifications[0]["id"] == actions[0].id
 
 
@@ -242,6 +247,32 @@ def test_execute_pending_action_runs_bash_in_sandbox(monkeypatch):
     assert FakeSandboxManager.calls[-1][0] == "cleanup"
 
 
+def test_build_approval_continuation_message_contains_result():
+    from agent.orchestration.pending_executor import (
+        build_approval_continuation_message,
+    )
+
+    action = SimpleNamespace(
+        id="act_test",
+        payload={
+            "tool": "bash",
+            "input": {"command": "echo hello"},
+        },
+    )
+    message = build_approval_continuation_message(
+        action,
+        {
+            "success": True,
+            "summary": "exit_code=0\nhello",
+        },
+    )
+
+    assert "act_test" in message
+    assert "echo hello" in message
+    assert "hello" in message
+    assert "不要重复申请或执行同一个命令" in message
+
+
 def test_pending_action_api_executes_and_cancels(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from api.routes import action_route
@@ -275,6 +306,14 @@ def test_pending_action_api_executes_and_cancels(tmp_path, monkeypatch):
             "outputs": [],
         },
     )
+    async def fake_continue(action, result, principal):
+        return "Agent continued with the approved result."
+
+    monkeypatch.setattr(
+        action_route,
+        "_continue_session_after_approval",
+        fake_continue,
+    )
 
     from api.main import app
     client = TestClient(app)
@@ -290,5 +329,9 @@ def test_pending_action_api_executes_and_cancels(tmp_path, monkeypatch):
     assert confirmed.status_code == 200
     assert confirmed.json()["status"] == STATUS_EXECUTED
     assert "hello" in confirmed.json()["result_payload"]["summary"]
+    assert (
+        confirmed.json()["result_payload"]["assistant_response"]
+        == "Agent continued with the approved result."
+    )
     assert rejected.status_code == 200
     assert rejected.json()["status"] == STATUS_CANCELED

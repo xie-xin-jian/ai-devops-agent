@@ -41,6 +41,8 @@ class ToolLoopMixin:
             block.name,
             tool_input,
             session_id=getattr(self, "session_id", ""),
+            run_id=getattr(self, "current_run_id", ""),
+            tool_use_id=str(getattr(block, "id", "") or ""),
             owner_id=getattr(
                 getattr(self, "principal", None),
                 "id",

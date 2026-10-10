@@ -202,7 +202,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!sessionId) return
     try {
       const res = await systemApi.messages(sessionId)
-      if (!get().isStreaming && get().messages.length === 0) {
+      if (!get().isStreaming) {
         set({ messages: res.messages || [] })
         const firstUser = (res.messages || []).find((item: Message) => item.role === 'user')
         if (firstUser?.content) {

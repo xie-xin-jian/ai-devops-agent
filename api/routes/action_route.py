@@ -16,6 +16,9 @@ from agent.orchestration.pending_actions import (
     STATUS_FAILED,
 )
 from agent.orchestration.pending_executor import execute_pending_action
+from agent.orchestration.pending_executor import (
+    build_approval_continuation_message,
+)
 from agent.observability.audit import (
     RESULT_CANCELED,
     RESULT_SUCCESS,
@@ -36,6 +39,31 @@ def _can_access_action(principal: Principal, action) -> bool:
     if principal.has(SESSION_MANAGE) or principal.has(AUDIT_VIEW):
         return True
     return bool(action.owner_id and action.owner_id == principal.id)
+
+
+async def _continue_session_after_approval(
+    action,
+    result: dict,
+    principal: Principal,
+) -> str:
+    """Return the approved result to the originating Session and continue it."""
+    if not action.session_id:
+        return ""
+
+    from api.main import get_or_create_session
+
+    _, session = get_or_create_session(action.session_id, principal)
+    message = build_approval_continuation_message(action, result)
+
+    def _run_continuation():
+        with session["run_lock"]:
+            session["cancel_event"].clear()
+            return session["agent"].run(
+                message,
+                session["cancel_event"],
+            )
+
+    return await run_in_threadpool(_run_continuation)
 
 
 @router.get("/pending")
@@ -93,6 +121,16 @@ async def confirm_pending_action(
                 action,
                 principal,
             )
+            try:
+                assistant_response = await _continue_session_after_approval(
+                    action,
+                    result,
+                    principal,
+                )
+                if assistant_response:
+                    result["assistant_response"] = assistant_response
+            except Exception as continuation_error:
+                result["continuation_error"] = str(continuation_error)
             action = store.finish(
                 action_id,
                 status=(
