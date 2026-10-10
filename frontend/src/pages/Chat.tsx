@@ -356,8 +356,12 @@ function formatActionCommand(action: PendingAction) {
   if (tool === 'target_edit_file') {
     return `编辑文件: ${input.path}\n\n替换前:\n${String(input.old_text || '').slice(0, 1000)}\n\n替换后:\n${String(input.new_text || '').slice(0, 1000)}`
   }
-  if (tool === 'target_restart') return '重启当前运维项目服务'
-  if (tool === 'target_deploy') return '执行当前项目配置的部署命令'
+  if (tool === 'target_restart') {
+    return action.summary || '重启当前运维项目服务'
+  }
+  if (tool === 'target_deploy') {
+    return action.summary || '执行当前项目配置的部署命令'
+  }
   return `${tool}\n${JSON.stringify(input, null, 2)}`
 }
 

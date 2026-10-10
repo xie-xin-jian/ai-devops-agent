@@ -20,6 +20,7 @@ SENSITIVE_NAMES = {
     "id_ed25519",
 }
 SENSITIVE_SUFFIXES = {".key", ".pem", ".p12", ".pfx"}
+SERVICE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.@-]{1,255}$")
 
 
 def allowed_roots() -> tuple[Path, ...]:
@@ -64,6 +65,16 @@ def _validate_url(url: str) -> str:
     return value
 
 
+def validate_service_name(service: str) -> str:
+    value = str(service or "").strip()
+    if value and not SERVICE_NAME_PATTERN.fullmatch(value):
+        raise ValueError(
+            "service must be a valid systemd unit name "
+            "(letters, digits, '.', '_', '@', '-')"
+        )
+    return value
+
+
 def normalize_target(
     payload: dict,
     *,
@@ -87,7 +98,7 @@ def normalize_target(
         name=name,
         root=str(root),
         description=str(payload.get("description") or "").strip(),
-        service=str(payload.get("service") or "").strip(),
+        service=validate_service_name(str(payload.get("service") or "")),
         health_url=_validate_url(str(payload.get("health_url") or "")),
         deploy_command=str(payload.get("deploy_command") or "").strip(),
         restart_command=str(payload.get("restart_command") or "").strip(),
@@ -172,4 +183,5 @@ __all__ = [
     "browse_directories",
     "is_sensitive_path",
     "normalize_target",
+    "validate_service_name",
 ]

@@ -253,6 +253,10 @@ Target 支持以下可选配置：
 | `restart_command` | 自定义重启命令；留空时使用 `systemctl restart <service>` |
 | `log_path` | 项目日志文件相对路径，供 `target_logs` 使用 |
 
+`service` 只接受合法 systemd 单元名（字母、数字、`.`、`_`、`@`、`-`）。
+默认重启使用参数列表执行，不经过宿主 Shell；自定义 `restart_command` 和
+`deploy_command` 会在审批记录中保存并展示完整命令。
+
 ## API 认证
 
 当 `.env` 中设置：

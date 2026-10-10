@@ -189,6 +189,30 @@ def _run_project_command(target, command: str, timeout_seconds: int = 120) -> st
     return f"exit_code={result.returncode}\n{output}"[:50000]
 
 
+def _restart_command_preview(target) -> str:
+    if target.restart_command:
+        return target.restart_command
+    if target.service:
+        return f"systemctl restart {target.service}"
+    return ""
+
+
+def _run_systemctl_restart(target) -> str:
+    if not target.service:
+        raise ValueError("Target has no service configured")
+    result = subprocess.run(
+        ["systemctl", "restart", target.service],
+        cwd=target.root,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    output = (result.stdout + result.stderr).strip()
+    if not output:
+        output = "(no output)"
+    return f"exit_code={result.returncode}\n{output}"
+
+
 def run_target_status(target_id: str) -> str:
     try:
         from agent.tools.ops import (
@@ -391,12 +415,13 @@ def run_target_edit_file(
 def run_target_restart(target_id: str) -> str:
     try:
         target = _target(target_id)
-        command = target.restart_command or (
-            f"systemctl restart {target.service}" if target.service else ""
-        )
+        command = _restart_command_preview(target)
         if not command:
             return "Error: Target has no restart_command or service configured."
-        output = _run_project_command(target, command, 120)
+        if target.restart_command:
+            output = _run_project_command(target, target.restart_command, 120)
+        else:
+            output = _run_systemctl_restart(target)
         time.sleep(1)
         health = (
             str(_http_check(target.health_url))

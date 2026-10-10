@@ -1,6 +1,7 @@
 """Project target configuration, browsing, and tool tests."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,6 +51,21 @@ def test_target_store_crud_and_browser(tmp_path, monkeypatch):
     assert updated.name == "旅游项目"
     store.delete(target.id)
     assert store.get(target.id) is None
+
+
+def test_target_store_rejects_shell_injection_in_service(tmp_path, monkeypatch):
+    root = tmp_path / "projects"
+    project = root / "trip"
+    project.mkdir(parents=True)
+    _configure_roots(monkeypatch, root)
+    store = _store(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="valid systemd unit name"):
+        store.create({
+            "name": "旅游助手",
+            "root": str(project),
+            "service": "nginx; touch /tmp/pwned",
+        })
 
 
 def test_target_browser_rejects_path_outside_roots(tmp_path, monkeypatch):
@@ -201,6 +217,46 @@ def test_target_write_rejects_sensitive_and_escape(tmp_path, monkeypatch):
 
     assert "Sensitive file" in sensitive
     assert "escapes target root" in escaped
+
+
+def test_target_restart_uses_systemctl_argv_without_shell(
+    tmp_path,
+    monkeypatch,
+):
+    from agent.targets import tools as target_tools
+
+    root = tmp_path / "project"
+    root.mkdir()
+    _configure_roots(monkeypatch, root.parent)
+    store = _store(tmp_path, monkeypatch)
+    target = store.create({
+        "name": "项目",
+        "root": str(root),
+        "service": "trip-planner.service",
+    })
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            returncode=0,
+            stdout="restarted",
+            stderr="",
+        )
+
+    monkeypatch.setattr(target_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(target_tools.time, "sleep", lambda _: None)
+
+    result = target_tools.run_target_restart(target.id)
+
+    assert "exit_code=0" in result
+    assert captured["cmd"] == [
+        "systemctl",
+        "restart",
+        "trip-planner.service",
+    ]
+    assert "shell" not in captured["kwargs"]
 
 
 def test_target_api_browse_and_create(tmp_path, monkeypatch):

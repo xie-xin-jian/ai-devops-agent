@@ -35,14 +35,23 @@ class ToolLoopMixin:
             if isinstance(block.input, dict)
             else {"input": str(block.input)}
         )
+        approval_summary = ""
         if block.name == "bash":
             title = f"执行命令: {str(tool_input.get('command', block.name))[:80]}"
         elif block.name in {"target_write_file", "target_edit_file"}:
             title = f"修改文件: {str(tool_input.get('path', block.name))[:80]}"
         elif block.name == "target_restart":
             title = "重启运维项目"
+            target = getattr(self, "target", None)
+            if target is not None:
+                from agent.targets.tools import _restart_command_preview
+
+                approval_summary = _restart_command_preview(target)
         elif block.name == "target_deploy":
             title = "部署运维项目"
+            target = getattr(self, "target", None)
+            if target is not None:
+                approval_summary = target.deploy_command
         else:
             title = f"执行工具: {block.name}"
         record = self.pending_action_store.create_tool_call(
@@ -58,7 +67,7 @@ class ToolLoopMixin:
                 "",
             ),
             source_message=getattr(self, "_last_user_query", ""),
-            summary=title,
+            summary=approval_summary or title,
         )
         self._audit(
             "pending_action.created",
