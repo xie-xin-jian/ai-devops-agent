@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Wrench, Terminal, ListTodo, Clock, Puzzle, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react'
+import { Wrench, Terminal, ListTodo, Clock, Puzzle, RefreshCw, ChevronDown, ChevronUp, FolderOpen } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import Badge from '../components/Badge'
 
@@ -11,21 +11,22 @@ const categoryIcons: Record<string, any> = {
   'MCP': Puzzle,
   '上下文': RefreshCw,
   '运维工具': Wrench,
+  '项目 Target': FolderOpen,
 }
 
 function categorize(name: string): string {
   const cats: Record<string, string[]> = {
-    '基础工具': ['bash', 'read_file', 'write_file', 'edit_file', 'glob'],
-    '任务管理': ['todo_write', 'create_task', 'list_tasks', 'get_task', 'claim_task', 'complete_task'],
+    '基础工具': ['bash'],
+    '任务管理': ['create_task', 'list_tasks', 'get_task', 'claim_task', 'complete_task'],
     '技能/子Agent': ['list_skills', 'load_skill', 'spawn_subagent'],
     'Cron 调度': ['schedule_cron', 'list_crons', 'cancel_cron'],
-    'MCP': ['connect_mcp'],
     '上下文': ['compact'],
   }
   for (const [cat, tools] of Object.entries(cats)) {
     if (tools.includes(name)) return cat
   }
   if (name.startsWith('mcp__')) return 'MCP'
+  if (name.startsWith('target_')) return '项目 Target'
   if (['service_status', 'disk_usage'].includes(name)) return '运维工具'
   return '其他'
 }

@@ -10,12 +10,15 @@ import PendingActions from './pages/PendingActions'
 import Audit from './pages/Audit'
 import Sandboxes from './pages/Sandboxes'
 import Recovery from './pages/Recovery'
+import Targets from './pages/Targets'
 import { useAppStore } from './store/useAppStore'
 
 function App() {
   const view = useAppStore((s) => s.view)
   const checkHealth = useAppStore((s) => s.checkHealth)
   const fetchMessages = useAppStore((s) => s.fetchMessages)
+  const fetchTargets = useAppStore((s) => s.fetchTargets)
+  const fetchPendingActions = useAppStore((s) => s.fetchPendingActions)
 
   // 初始化主题
   useEffect(() => {
@@ -39,7 +42,9 @@ function App() {
 
   useEffect(() => {
     fetchMessages()
-  }, [fetchMessages])
+    fetchTargets()
+    fetchPendingActions()
+  }, [fetchMessages, fetchTargets, fetchPendingActions])
 
   const pages: Record<string, React.ReactNode> = {
     chat: <Chat />,
@@ -52,6 +57,7 @@ function App() {
     audit: <Audit />,
     sandboxes: <Sandboxes />,
     recovery: <Recovery />,
+    targets: <Targets />,
   }
 
   return <Layout>{pages[view] || <Chat />}</Layout>

@@ -29,7 +29,6 @@ def test_high_similarity_memory_is_merged(tmp_path, monkeypatch):
 
 def test_medium_similarity_memory_becomes_candidate(tmp_path, monkeypatch):
     monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
-    monkeypatch.setattr("agent.memory.retrieval.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
     monkeypatch.setattr("agent.memory.lifecycle.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
     monkeypatch.setattr("agent.memory.lifecycle.MEMORY_AUTO_MERGE_THRESHOLD", 0.99)
     system = memory.MemorySystem()

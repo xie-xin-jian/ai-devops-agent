@@ -4,7 +4,6 @@ import pytest
 
 import agent.platform.config as config
 from agent.mcp import custom as mcp
-from agent.tools import shell
 
 
 def test_api_requires_bearer_token_when_configured(monkeypatch):
@@ -24,14 +23,6 @@ def test_api_requires_bearer_token_when_configured(monkeypatch):
         headers={"Authorization": "Bearer test-secret"},
     )
     assert response.status_code == 200
-
-
-def test_bash_rejects_cwd_outside_workspace(tmp_path, monkeypatch):
-    monkeypatch.setattr(shell, "WORKDIR", tmp_path)
-
-    result = shell.run_bash("echo should-not-run", cwd=tmp_path.parent)
-
-    assert "escapes workspace" in result
 
 
 def test_custom_mcp_shell_handler_is_disabled_by_default(monkeypatch):

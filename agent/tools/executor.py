@@ -5,18 +5,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from agent.platform.config import WORKDIR
 from agent.platform.identity import Principal, system_admin_principal
 from agent.sandbox.manager import (
     SandboxManager,
-    SandboxTimeout,
     SandboxUnavailable,
 )
 from agent.tools.policy import ToolPolicyContext, evaluate_tool_policy
 from agent.tools.registry import ToolRegistry
+from agent.tools.shell import run_host_bash
+from agent.targets.store import TargetStore
+from agent.targets.tools import TARGET_TOOL_NAMES
 
 
 SANDBOX_TOOL_NAMES = {
-    "bash",
     "read_file",
     "write_file",
     "edit_file",
@@ -42,6 +44,7 @@ class ToolExecutor:
         principal: Principal | None = None,
         tool_context: ToolPolicyContext | None = None,
         audit: Callable[..., None] | None = None,
+        target_id: str = "",
     ):
         self.registry = registry
         self.sandbox_manager = sandbox_manager or SandboxManager()
@@ -52,6 +55,7 @@ class ToolExecutor:
             or self.principal.to_tool_policy_context()
         )
         self.audit = audit
+        self.target_id = str(target_id or "")
 
     def execute(
         self,
@@ -63,9 +67,6 @@ class ToolExecutor:
         source: str | None = None,
     ) -> ToolExecutionResult:
         active_registry = registry or self.registry
-        spec = active_registry.get(tool_name)
-        if spec is None:
-            raise ValueError(f"No executor registered for tool '{tool_name}'")
         if not isinstance(tool_input, dict):
             raise ValueError(f"Invalid input for tool '{tool_name}'")
 
@@ -73,24 +74,47 @@ class ToolExecutor:
         if not decision.allowed:
             raise PermissionError(decision.reason)
 
+        spec = active_registry.get(tool_name)
+        if spec is None:
+            raise ValueError(f"No executor registered for tool '{tool_name}'")
+
         if (
             decision.policy.sandbox_required
             and tool_name in SANDBOX_TOOL_NAMES
         ):
-            self._ensure_sandbox(run_id, source=source)
+            self._ensure_sandbox_workspace(run_id, source=source)
             output = self._run_sandboxed_tool(
                 run_id,
                 tool_name,
                 tool_input,
-                decision.policy.timeout_seconds,
             )
             return ToolExecutionResult(
                 output=str(output),
                 sandbox_used=True,
             )
 
+        if tool_name == "bash":
+            target_root = ""
+            if self.target_id:
+                target = TargetStore().get(self.target_id)
+                if target is not None:
+                    target_root = target.root
+            output = run_host_bash(
+                tool_input.get("command", ""),
+                cwd=tool_input.get("cwd"),
+                default_cwd=target_root or WORKDIR,
+                timeout=decision.policy.timeout_seconds,
+            )
+            return ToolExecutionResult(output=output)
+
         try:
-            output = spec.handler(**tool_input)
+            if tool_name in TARGET_TOOL_NAMES:
+                output = spec.handler(
+                    target_id=self.target_id,
+                    **tool_input,
+                )
+            else:
+                output = spec.handler(**tool_input)
         except TypeError as exc:
             output = f"Error: {exc}"
         return ToolExecutionResult(output=str(output))
@@ -110,18 +134,18 @@ class ToolExecutor:
         if self.audit:
             self.audit(
                 "sandbox.removed",
-                "Docker sandbox removed",
+                "Sandbox workspace removed",
                 result="success",
                 severity="info",
                 actor="agent",
                 correlation_id=run_id,
                 payload={
                     "sandbox_id": session.id,
-                    "container_id": session.container_id,
+                    "workspace_host_path": session.workspace_host_path,
                 },
             )
 
-    def _ensure_sandbox(
+    def _ensure_sandbox_workspace(
         self,
         run_id: str,
         *,
@@ -134,12 +158,12 @@ class ToolExecutor:
         if self.audit:
             self.audit(
                 "sandbox.creating",
-                "Creating Docker sandbox",
+                "Creating sandbox workspace",
                 result="success",
                 severity="info",
                 actor="agent",
                 correlation_id=run_id,
-                payload={"image": self.sandbox_manager.spec.image},
+                payload={"base_dir": str(self.sandbox_manager.base_dir)},
             )
         try:
             session = self.sandbox_manager.create(
@@ -152,7 +176,7 @@ class ToolExecutor:
             if self.audit:
                 self.audit(
                     "sandbox.failed",
-                    "Docker sandbox unavailable",
+                    "Sandbox workspace unavailable",
                     summary=str(exc),
                     result="failed",
                     severity="high",
@@ -163,7 +187,7 @@ class ToolExecutor:
         if self.audit:
             self.audit(
                 "sandbox.created",
-                "Docker sandbox created",
+                "Sandbox workspace created",
                 result="success",
                 severity="info",
                 actor="agent",
@@ -177,21 +201,8 @@ class ToolExecutor:
         run_id: str,
         tool_name: str,
         tool_input: dict,
-        timeout_seconds: int,
     ) -> str:
         try:
-            if tool_name == "bash":
-                if tool_input.get("run_in_background"):
-                    return (
-                        "Error: background sandbox execution is not "
-                        "enabled here"
-                    )
-                return self.sandbox_manager.run(
-                    run_id,
-                    tool_input.get("command", ""),
-                    cwd=tool_input.get("cwd"),
-                    timeout_seconds=timeout_seconds,
-                )
             if tool_name == "read_file":
                 return self.sandbox_manager.read_file(
                     run_id,
@@ -217,22 +228,8 @@ class ToolExecutor:
                     run_id,
                     tool_input.get("pattern", ""),
                 )
-        except SandboxTimeout as exc:
-            if self.audit:
-                self.audit(
-                    "sandbox.timeout",
-                    f"Sandbox tool timed out: {tool_name}",
-                    summary=str(exc),
-                    result="failed",
-                    severity="high",
-                    actor="agent",
-                    tool_name=tool_name,
-                    correlation_id=run_id,
-                    payload={"input": tool_input},
-                )
-            return f"Error: {exc}"
         except SandboxUnavailable as exc:
-            return f"Error: Docker sandbox unavailable: {exc}"
+            return f"Error: Sandbox workspace unavailable: {exc}"
         except Exception as exc:
             return f"Error: sandbox tool failed: {exc}"
         raise ValueError(f"Tool '{tool_name}' is not supported in Sandbox")

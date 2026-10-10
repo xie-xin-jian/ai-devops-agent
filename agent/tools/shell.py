@@ -2,28 +2,61 @@
 from pathlib import Path
 
 from agent.platform.config import WORKDIR
-from agent.tools.file_tools import safe_path
 
 
-def _resolve_cwd(cwd: str | Path | None) -> Path:
-    resolved = safe_path(str(cwd) if cwd else ".", WORKDIR)
-    if not resolved.is_dir():
-        raise ValueError(f"Working directory does not exist: {cwd}")
-    return resolved
+def run_host_bash(
+    command: str,
+    cwd: str | Path | None = None,
+    *,
+    default_cwd: str | Path | None = None,
+    timeout: int = 120,
+) -> str:
+    """Run an approved command directly on the host.
 
-
-def run_bash(command: str, cwd: str | Path | None = None,
-             run_in_background: bool = False) -> str:
+    The command has the same filesystem permissions as the Agent process.
+    Approval must happen before this function is called.
+    """
     try:
-        working_dir = _resolve_cwd(cwd)
-        r = subprocess.run(command, shell=True, cwd=working_dir,
-                           capture_output=True, text=True, timeout=120)
-        out = (r.stdout + r.stderr).strip()
-        return out[:50000] if out else "(no output)"
-    except ValueError as e:
-        return f"Error: {e}"
+        if not str(command or "").strip():
+            return "Error: command is required"
+
+        base = Path(default_cwd or WORKDIR).resolve()
+        if not base.is_dir():
+            return f"Error: Default working directory does not exist: {base}"
+
+        if cwd:
+            working_dir = Path(cwd).expanduser()
+            if not working_dir.is_absolute():
+                working_dir = base / working_dir
+            working_dir = working_dir.resolve()
+        else:
+            working_dir = base
+
+        if not working_dir.is_dir():
+            return f"Error: Working directory does not exist: {working_dir}"
+
+        effective_timeout = max(1, min(int(timeout or 120), 600))
+        result = subprocess.run(
+            command,
+            shell=True,
+            cwd=working_dir,
+            capture_output=True,
+            text=True,
+            timeout=effective_timeout,
+        )
+        output = (result.stdout + result.stderr).strip()
+        if not output:
+            output = "(no output)"
+        return (
+            f"exit_code={result.returncode}\n"
+            f"cwd={working_dir}\n"
+            f"{output}"
+        )[:50000]
     except subprocess.TimeoutExpired:
-        return "Error: Timeout (120s)"
+        return f"Error: Timeout ({timeout}s)"
+    except Exception as exc:
+        return f"Error: {exc}"
+
 
 BASH_SCHEMA = {
     "name": "bash",
@@ -42,5 +75,5 @@ BASH_SCHEMA = {
 SHELL_TOOL_SCHEMAS = [BASH_SCHEMA]
 
 SHELL_TOOL_HANDLERS = {
-    "bash": run_bash,
+    "bash": run_host_bash,
 }

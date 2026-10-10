@@ -153,7 +153,6 @@ def test_agent_run_persists_session_and_completed_run(
     agent.sandbox_manager = None
     agent._current_turn = 0
 
-    monkeypatch.setattr(pipeline, "trigger_hooks", lambda *args: None)
     monkeypatch.setattr(pipeline, "collect_background_results", lambda: [])
     monkeypatch.setattr(agent, "_compact_if_needed", lambda messages: messages)
     monkeypatch.setattr(

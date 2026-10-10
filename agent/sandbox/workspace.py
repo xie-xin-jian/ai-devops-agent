@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 import shutil
 import uuid
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
-from agent.sandbox.backend import SandboxError
+from agent.sandbox.models import SandboxError
 
 
 class SandboxWorkspaceMixin:
@@ -92,17 +92,3 @@ class SandboxWorkspaceMixin:
             raise SandboxError("Refusing to remove workspace outside sandbox base")
         if target.exists():
             shutil.rmtree(target)
-
-    def _container_workdir(self, cwd: str | None) -> str:
-        if not cwd or cwd in {".", "/"}:
-            return "/workspace"
-        path = PurePosixPath(cwd)
-        if ".." in path.parts:
-            raise SandboxError("Working directory escapes sandbox workspace")
-        if path.is_absolute():
-            if path == PurePosixPath("/workspace"):
-                return "/workspace"
-            if path.is_relative_to("/workspace"):
-                return str(path)
-            raise SandboxError("Absolute working directory must be under /workspace")
-        return str(PurePosixPath("/workspace") / path)

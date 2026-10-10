@@ -25,6 +25,7 @@ from agent.mcp.client import (
     list_sse_mcp_servers,
 )
 from agent.platform.identity import MCP_CONNECT, MCP_VIEW, Principal
+import agent.platform.config as config
 from api.auth import require_permissions
 
 router = APIRouter()
@@ -38,7 +39,12 @@ async def list_mcp():
     """列出所有已连接的 MCP 服务器和可用服务器"""
     return {
         "connected": list_connected_mcp(),
-        "available": list(MOCK_SERVERS.keys()),
+        "available": (
+            list(MOCK_SERVERS.keys())
+            if config.ENABLE_MOCK_MCP
+            else []
+        ),
+        "mock_enabled": bool(config.ENABLE_MOCK_MCP),
         "custom": list_custom_servers(),
         "stdio_servers": list_stdio_mcp_servers(),
         "sse_servers": list_sse_mcp_servers(),
@@ -59,6 +65,8 @@ async def connect(
         owner_id=principal.id,
         source="api",
     )
+    if result.startswith("Error"):
+        raise HTTPException(status_code=400, detail=result)
     if result.startswith("Unknown"):
         raise HTTPException(status_code=404, detail=result)
     return {"result": result, "connected": list_connected_mcp()}

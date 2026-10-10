@@ -12,48 +12,11 @@ from agent.memory.models import (
 from agent.memory.store import _memory_lock
 from agent.platform.config import (
     MEMORY_MIN_SCORE,
-    MEMORY_NEAR_DUP_THRESHOLD,
     MEMORY_TOP_K,
 )
 
 
 class MemoryRetrievalMixin:
-    def find_similar(
-        self,
-        content: str,
-        *,
-        scope: str,
-        memory_type: str | None = None,
-        threshold: float | None = None,
-        limit: int = 5,
-    ) -> list[dict]:
-        threshold_value = MEMORY_NEAR_DUP_THRESHOLD if threshold is None else threshold
-        with _memory_lock:
-            self._reload_if_changed()
-            matches = []
-            for memory in self.memories:
-                if memory.get("status", "active") != "active":
-                    continue
-                if memory.get("scope", "global") != scope:
-                    continue
-                if memory_type and memory.get("memory_type") != memory_type:
-                    continue
-
-                similarity = similarity_score(content, memory.get("content", ""))
-                if similarity >= threshold_value:
-                    matches.append(
-                        {
-                            "memory": dict(memory),
-                            "similarity": similarity,
-                        }
-                    )
-
-            matches.sort(
-                key=lambda item: item["similarity"],
-                reverse=True,
-            )
-            return matches[: max(1, limit)]
-
     def _best_near_duplicate(
         self,
         content: str,

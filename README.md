@@ -9,7 +9,7 @@
 ## 核心特性
 
 - **Agent Loop**：最多 50 轮模型调用，支持多轮推理、工具执行和结果回填
-- **内置工具系统**：40 个内置工具，使用 `Schema + Handler` 双注册表
+- **内置工具系统**：44 个 Agent 可见工具，使用 `Schema + Handler` 双注册表
 - **MCP 动态工具池**：支持内置、自定义、stdio 和 SSE MCP，运行时注入 `mcp__server__tool`
 - **会话级上下文隔离**：每个 Session 拥有独立 Agent、消息历史、运行锁和取消事件
 - **轻量崩溃恢复**：Session 原始消息和 Run 安全点持久化，启动时标记未完成 Run，并支持人工从安全点继续
@@ -44,8 +44,8 @@
   -> 调用模型
       -> 有 tool_use：由 Tool Policy 统一判断执行方式
           -> 只读巡检：直接执行
-          -> 文件 / 子 Agent：在 Docker Sandbox 中执行
-          -> Bash：生成 Pending Action，批准后在 Sandbox 中执行
+          -> 文件 / 子 Agent：在隔离临时工作区中执行
+          -> Bash：生成 Pending Action，批准后在宿主机执行
       -> 无 tool_use：生成最终回答
   -> SSE 推送状态和执行轨迹
 ```
@@ -101,16 +101,9 @@ MEMORY_ACCESS_FLUSH_BATCH=20
 API_AUTH_TOKEN=
 API_AUTH_USER=api-user
 API_AUTH_ROLES=platform-admin
-DOCKER_HOST=
 SANDBOX_ENABLED=1
-SANDBOX_IMAGE=python:3.11-slim
-SANDBOX_TIMEOUT_SECONDS=120
-SANDBOX_MEMORY_LIMIT=512m
-SANDBOX_CPUS=1.0
-SANDBOX_PIDS_LIMIT=128
-SANDBOX_NETWORK_DISABLED=1
-SANDBOX_USER=65534:65534
 ENABLE_UNSAFE_MCP_SHELL=0
+ENABLE_MOCK_MCP=0
 ```
 
 主要配置：
@@ -132,15 +125,10 @@ ENABLE_UNSAFE_MCP_SHELL=0
 | `API_AUTH_TOKEN` | 可选的 API Bearer Token |
 | `API_AUTH_USER` | 当前 API Token 对应的用户 ID |
 | `API_AUTH_ROLES` | 当前用户角色；仅用于记忆全局管理和只读边界，不再启用细粒度权限矩阵 |
-| `DOCKER_HOST` | 远程 Docker daemon 地址；未配置时默认拒绝沙箱执行 |
-| `SANDBOX_IMAGE` | 每次 Run 使用的沙箱镜像 |
-| `SANDBOX_TIMEOUT_SECONDS` | 单条沙箱命令超时时间 |
-| `SANDBOX_MEMORY_LIMIT` | 沙箱内存限制 |
-| `SANDBOX_CPUS` | 沙箱 CPU 限制 |
-| `SANDBOX_PIDS_LIMIT` | 沙箱最大进程数 |
-| `SANDBOX_NETWORK_DISABLED` | 是否禁用沙箱网络，默认禁用 |
-| `SANDBOX_USER` | 容器内非 root 用户 |
+| `SANDBOX_ENABLED` | 是否启用隔离临时工作区 |
+| `TARGET_BROWSE_ROOTS` | 前端服务器目录浏览器允许访问的绝对路径，逗号分隔 |
 | `ENABLE_UNSAFE_MCP_SHELL` | 是否允许自定义 MCP Shell Handler，默认关闭 |
+| `ENABLE_MOCK_MCP` | 是否启用内置 Mock MCP，默认关闭，避免伪造部署结果 |
 | `ALLOWED_ORIGINS` | 逗号分隔的 CORS 来源 |
 
 注意：`DEFAULT_MAX_TOKENS` 和 `ESCALATED_MAX_TOKENS` 当前由代码常量控制，不是 `.env` 配置项。
@@ -165,7 +153,7 @@ DATA_DIR/
 └── logs/
 ```
 
-`DATA_DIR` 只决定应用运行数据的默认位置。Agent 命令执行使用独立的 Docker Sandbox。
+`DATA_DIR` 只决定应用运行数据的默认位置。Sandbox 文件工具使用隔离的临时工作区副本，不执行容器命令。
 
 `.sessions/` 保存 Session 原始消息，保证刷新页面和后端重启后仍能恢复对话历史。`.runs/` 只保存轻量 Run 状态、阶段和安全点快照，不恢复旧版 Action Router 或完整 Checkpoint。
 
@@ -176,7 +164,7 @@ DATA_DIR/
 3. 只有最后一个安全点没有工具在途时才允许人工继续。
 4. 将崩溃时仍在运行的 Background Task 标记为失败。
 5. 将已确认但没有完成的 Pending Action 标记为失败。
-6. 清理遗留的 Docker Sandbox 容器和工作区。
+6. 清理遗留的 Sandbox 临时工作区。
 
 如果进程在工具执行期间崩溃，系统不会自动重放该工具，避免重复执行 Bash、部署或删除操作。
 
@@ -229,9 +217,7 @@ API 文档：http://localhost:8000/docs
 可视化界面：http://localhost:8000/ui
 ```
 
-默认配置不挂载宿主 Docker Socket。沙箱执行应通过 `DOCKER_HOST` 连接远程 Docker daemon；未配置时返回错误，不会回退到宿主 Shell。
-
-Sandbox 采用懒创建：只有文件写入、子 Agent 或已批准的 Bash 需要执行时才会创建容器。容器使用非 root 用户、只读根文件系统、资源限制和 `no-new-privileges`，执行结束后自动清理。
+Sandbox 不再创建 Docker 容器，也不再提供容器内命令执行能力。它只负责把源工作区复制到隔离目录，供 `read_file`、`write_file`、`edit_file`、`glob` 和子 Agent 使用；Run 结束后自动删除工作区。已批准的 Bash 直接在 Target 宿主机执行。
 
 ## 工具执行策略
 
@@ -240,11 +226,32 @@ Sandbox 采用懒创建：只有文件写入、子 Agent 或已批准的 Bash �
 | 类型 | 策略 |
 |---|---|
 | CPU、内存、磁盘、进程、网络等只读巡检 | 直接执行并记录审计 |
-| `read_file`、`write_file`、`edit_file`、`glob`、`spawn_subagent` | 在 Docker Sandbox 中执行 |
-| `bash` | 创建 Pending Action，用户批准后执行；拒绝后不会执行 |
+| `target_status`、`target_logs`、`target_http`、`target_list_files`、`target_read_file`、`target_glob` | 在 Session 当前选中的项目根目录内只读执行 |
+| `target_write_file`、`target_edit_file` | 修改项目文件，创建 Pending Action 并等待审批，默认保存修改前备份 |
+| `target_restart`、`target_deploy` | 在项目根目录执行，创建 Pending Action 并等待审批 |
+| `read_file`、`write_file`、`edit_file`、`glob` | 仅注册给 Subagent 内部使用，不进入主 Agent 工具目录 |
+| `spawn_subagent` | 子 Agent 只允许使用上述 Sandbox 文件工具，禁止宿主 Bash |
+| `bash` | 创建 Pending Action，用户批准后直接在宿主机执行，默认工作目录为当前 Target 根目录 |
 | Memory、Task、Cron、普通 MCP | 按策略执行并记录轻量日志 |
 
 高风险动态 MCP 工具仍会由 Tool Policy 标记为需要审批。这里不再维护 Action Router、Preflight 和跨系统 Run Checkpoint 等重复治理层。
+
+## 运维项目 Target
+
+前端“运维项目”页面通过服务端目录浏览器选择项目目录，目录范围由
+`TARGET_BROWSE_ROOTS` 限制。每个 Session 绑定一个当前 Target，Target 配置
+持久化在 `DATA_DIR/.targets/targets.json`。
+
+Target 支持以下可选配置：
+
+| 字段 | 用途 |
+|---|---|
+| `root` | 项目根目录，所有项目文件工具的限制边界 |
+| `service` | systemd 服务名，用于状态和重启 |
+| `health_url` | 部署或重启后的健康检查 URL |
+| `deploy_command` | 审批后执行的部署命令，工作目录为项目根目录 |
+| `restart_command` | 自定义重启命令；留空时使用 `systemctl restart <service>` |
+| `log_path` | 项目日志文件相对路径，供 `target_logs` 使用 |
 
 ## API 认证
 
@@ -384,21 +391,20 @@ curl -N -X POST http://localhost:8000/api/chat/stream \
 
 当前 `text_delta` 是拿到完整模型响应后按词拆分发送，不是模型原生 Token Streaming。工具调用和状态事件是实时产生的。
 
-## 内置工具（40 个）
+## 主 Agent 工具（44 个）
 
 | 类别 | 工具 |
 |---|---|
-| 文件 | `read_file` `write_file` `edit_file` `glob` |
+| 项目 Target | `target_status` `target_logs` `target_http` `target_list_files` `target_read_file` `target_glob` `target_write_file` `target_edit_file` `target_restart` `target_deploy` |
 | Shell | `bash` |
 | 服务与系统 | `service_status` `system_info` `memory_usage` `cpu_usage` `process_top` `process_search` |
 | 磁盘与网络 | `disk_usage` `disk_io` `network_interfaces` `port_listen` `ping_host` |
 | 日志 | `system_logs` |
-| Todo 与任务 | `todo_write` `create_task` `list_tasks` `get_task` `claim_task` `complete_task` |
+| 任务 | `create_task` `list_tasks` `get_task` `claim_task` `complete_task` |
 | Skill / SubAgent | `list_skills` `load_skill` `spawn_subagent` |
 | 记忆 | `add_memory` `search_memory` `update_memory` `archive_memory` `delete_memory` `restore_memory` |
 | 上下文 | `compact` |
 | Cron | `schedule_cron` `list_crons` `cancel_cron` `list_cron_logs` |
-| MCP | `connect_mcp` |
 | 后台任务 | `list_background_tasks` |
 
 MCP 连接成功后，还会动态增加 `mcp__{server}__{tool}` 工具。
@@ -444,7 +450,6 @@ ai-devops-agent/
 │   │   ├── context_manager.py  # Prompt、记忆召回和上下文压缩
 │   │   ├── context_compact.py  # 上下文预算、裁剪和摘要
 │   │   ├── error_recovery.py   # 重试、降级和 Token 扩容
-│   │   └── hooks.py            # Agent Hook 注册与触发
 │   ├── tools/
 │   │   ├── registry.py         # Schema + Handler + Policy 注册表
 │   │   ├── executor.py         # 宿主、Sandbox、审批工具执行入口
@@ -477,13 +482,12 @@ ai-devops-agent/
 │   │   ├── sse.py              # SSE JSON-RPC
 │   │   └── client.py           # 兼容门面
 │   ├── sandbox/
-│   │   ├── backend.py          # Docker 和容器抽象
+│   │   ├── models.py           # Sandbox 工作区模型和异常
 │   │   ├── workspace.py        # 工作区隔离和路径约束
-│   │   ├── cleanup.py          # 孤儿资源清理
-│   │   └── manager.py          # Sandbox 生命周期
+│   │   ├── cleanup.py          # 孤儿工作区清理
+│   │   └── manager.py          # Sandbox 工作区生命周期
 │   ├── orchestration/
 │   │   ├── tasks.py            # 持久化依赖任务图
-│   │   ├── todo.py             # 无状态 Todo 工具
 │   │   ├── cron.py             # Cron 调度和日志
 │   │   ├── background.py       # 后台任务
 │   │   ├── pending_actions.py  # 待审批动作持久化
@@ -515,7 +519,7 @@ ai-devops-agent/
 ├── frontend/
 │   ├── src/api/
 │   ├── src/components/
-│   ├── src/pages/              # 聊天、任务、审批、审计、Sandbox 等页面
+│   ├── src/pages/              # 聊天、任务、审批、审计、工作区等页面
 │   ├── src/store/
 │   └── src/types/
 ├── mcp_servers/
@@ -596,7 +600,7 @@ pytest -q
 - 记忆仅做精确内容去重，语义相近记录仍需后续合并策略
 - Cron 去重只保证单进程范围，多实例需要分布式租约
 - `cancel_event` 不能抢占正在运行的同步工具
-- Shell 和 MCP 权限是基础 Hook 防护，不是完整 Sandbox
+- Shell 和 MCP 由 Tool Policy、审批和审计治理，不是操作系统级隔离
 - `VITE_API_TOKEN` 会进入浏览器产物，不适合公网多用户认证
 - 上下文按字符近似计算，不是精确 Token 计数
 

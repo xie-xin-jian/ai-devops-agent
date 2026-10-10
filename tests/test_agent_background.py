@@ -3,7 +3,6 @@
 from types import SimpleNamespace
 
 from agent.core import comprehensive
-from agent.core import pipeline
 from agent.orchestration.pending_actions import PendingActionStore
 from agent.platform.identity import system_admin_principal
 from agent.tools.executor import ToolExecutor
@@ -35,7 +34,6 @@ def test_bash_waits_for_approval_before_background_start(
         tool_context=agent.tool_context,
     )
 
-    monkeypatch.setattr(pipeline, "trigger_hooks", lambda *args: None)
 
     output = agent._handle_tool_call(
         SimpleNamespace(name="bash", input={"command": "npm install"})

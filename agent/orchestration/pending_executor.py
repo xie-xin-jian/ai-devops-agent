@@ -64,6 +64,7 @@ def execute_pending_action(action, principal: Principal) -> dict:
         sandbox_manager=sandbox,
         sandbox_source="",
         principal=principal,
+        target_id=getattr(action, "target_id", ""),
     )
     outputs = []
 
@@ -89,6 +90,7 @@ def execute_pending_action(action, principal: Principal) -> dict:
                     principal=principal,
                     session_id=getattr(action, "session_id", ""),
                     parent_run_id=run_id,
+                    target_id=getattr(action, "target_id", ""),
                 )
                 result = (
                     f"Background task started: {background_id}\n"

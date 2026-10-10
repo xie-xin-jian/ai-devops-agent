@@ -8,12 +8,14 @@ import {
   RotateCcw,
   ScrollText,
   ShieldCheck,
+  Server,
   Wrench,
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 
 const navItems = [
   { id: 'chat' as const, label: '对话', icon: MessageSquare },
+  { id: 'targets' as const, label: '运维项目', icon: Server },
   { id: 'tasks' as const, label: '任务', icon: ListTodo },
   { id: 'cron' as const, label: '定时', icon: Clock },
   { id: 'tools' as const, label: '工具', icon: Wrench },
@@ -22,7 +24,7 @@ const navItems = [
   { id: 'actions' as const, label: '审批', icon: ShieldCheck },
   { id: 'audit' as const, label: '审计', icon: ScrollText },
   { id: 'recovery' as const, label: '恢复', icon: RotateCcw },
-  { id: 'sandboxes' as const, label: 'Sandbox', icon: Box },
+  { id: 'sandboxes' as const, label: '工作区', icon: Box },
 ]
 
 export default function Sidebar() {

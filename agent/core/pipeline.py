@@ -10,7 +10,6 @@ from agent.core.error_recovery import (
     is_prompt_too_long_error,
     recover_context_overflow,
 )
-from agent.core.hooks import trigger_hooks
 from agent.extensions.subagent import extract_text, has_tool_use
 from agent.observability.audit import (
     RESULT_BLOCKED,
@@ -73,7 +72,7 @@ class AgentPipelineMixin:
         return final_text or ""
 
     def run_stream(self, user_message: str, cancel_event=None):
-        """Run the Agent and always clean up the per-run Docker sandbox."""
+        """Run the Agent and always clean up the per-run Sandbox workspace."""
         try:
             yield from self._run_stream_impl(user_message, cancel_event)
         finally:
@@ -154,7 +153,6 @@ class AgentPipelineMixin:
                 correlation_id=self.current_run_id,
                 payload={"message": user_message},
             )
-            trigger_hooks("UserPromptSubmit", user_message)
             self._last_user_query = user_message
             self.messages.append({"role": "user", "content": user_message})
             self._persist_session_state()
@@ -492,8 +490,6 @@ class AgentPipelineMixin:
                 self._pending_compaction = False
 
             self._persist_run_safe("model")
-
-        trigger_hooks("Stop", self.messages)
 
         # 如果循环结束但没拿到 final_text，从后往前找
         if not final_text:

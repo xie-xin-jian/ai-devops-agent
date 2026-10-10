@@ -5,7 +5,10 @@ import threading
 import time
 from types import SimpleNamespace
 
+import agent.platform.config as config
+from agent.mcp.builtin import connect_mcp
 from agent.mcp import stdio as mcp
+from agent.mcp.registry import mcp_clients
 
 
 def test_recv_response_skips_unrelated_request_id():
@@ -90,3 +93,25 @@ def test_stdio_handler_surfaces_json_rpc_error(monkeypatch):
 
     assert "MCP error" in result
     assert "missing" in result
+
+
+def test_mock_mcp_is_disabled_by_default(monkeypatch):
+    monkeypatch.setattr(config, "ENABLE_MOCK_MCP", False)
+    mcp_clients.pop("deploy", None)
+
+    result = connect_mcp("deploy")
+
+    assert result.startswith("Error:")
+    assert "disabled" in result
+    assert "deploy" not in mcp_clients
+
+
+def test_mock_mcp_can_be_enabled_explicitly(monkeypatch):
+    monkeypatch.setattr(config, "ENABLE_MOCK_MCP", True)
+    mcp_clients.pop("deploy", None)
+    try:
+        result = connect_mcp("deploy")
+        assert result.startswith("Connected to MCP server 'deploy'")
+        assert "deploy" in mcp_clients
+    finally:
+        mcp_clients.pop("deploy", None)

@@ -1,4 +1,4 @@
-import type { Message, Task, CronJob, CronLog, MCPServer, Tool, HealthStatus, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail } from '../types'
+import type { Message, Task, CronJob, CronLog, MCPServer, Tool, HealthStatus, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail, Target, TargetBrowserResult, PendingAction } from '../types'
 
 const API_BASE = ''
 const API_TOKEN = import.meta.env.VITE_API_TOKEN || ''
@@ -45,11 +45,18 @@ export interface StreamEvent {
   total_turns?: number
   pending_action?: {
     id: string
+    session_id?: string
+    target_id?: string
     action_code: string
     title: string
     risk_level: string
     status: string
     summary: string
+    payload?: {
+      tool?: string
+      input?: Record<string, any>
+    }
+    steps?: PendingAction['steps']
     rollback_plan?: string
     verification?: string
   }
@@ -62,6 +69,7 @@ export const chatApi = {
     sessionId: string | undefined,
     onEvent: (event: StreamEvent) => void,
     onSession: (sessionId: string) => void,
+    targetId?: string,
     signal?: AbortSignal
   ): Promise<string> => {
     return fetch('/api/chat/stream', {
@@ -70,7 +78,7 @@ export const chatApi = {
         'Content-Type': 'application/json',
         ...authHeaders(),
       },
-      body: JSON.stringify({ message, session_id: sessionId }),
+      body: JSON.stringify({ message, session_id: sessionId, target_id: targetId || null }),
       signal,
     }).then(async (res) => {
       if (!res.ok || !res.body) {
@@ -127,17 +135,17 @@ export const actionApi = {
     if (sessionId) params.set('session_id', sessionId)
     if (status) params.set('status', status)
     const query = params.toString()
-    return request<{ actions: any[] }>(
+    return request<{ actions: PendingAction[] }>(
       `/api/actions/pending${query ? `?${query}` : ''}`
     )
   },
   confirm: (actionId: string, actor = 'api-user') =>
-    request<any>(`/api/actions/pending/${actionId}/confirm`, {
+    request<PendingAction>(`/api/actions/pending/${actionId}/confirm`, {
       method: 'POST',
       body: JSON.stringify({ actor }),
     }),
   cancel: (actionId: string, actor = 'api-user', reason = '') =>
-    request<any>(`/api/actions/pending/${actionId}/cancel`, {
+    request<PendingAction>(`/api/actions/pending/${actionId}/cancel`, {
       method: 'POST',
       body: JSON.stringify({ actor, reason }),
     }),
@@ -162,6 +170,41 @@ export const auditApi = {
       `/api/audit/events${suffix ? `?${suffix}` : ''}`
     )
   },
+}
+
+export const targetApi = {
+  list: (sessionId?: string) => {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+    return request<{ targets: Target[]; active_target_id: string }>(
+      `/api/targets/${query}`
+    )
+  },
+  browse: (path = '') => {
+    const query = path ? `?path=${encodeURIComponent(path)}` : ''
+    return request<TargetBrowserResult>(`/api/targets/browse${query}`)
+  },
+  create: (payload: Partial<Target>) =>
+    request<Target>('/api/targets/', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  update: (targetId: string, payload: Partial<Target>) =>
+    request<Target>(`/api/targets/${targetId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  remove: (targetId: string) =>
+    request<{ status: string }>(`/api/targets/${targetId}`, {
+      method: 'DELETE',
+    }),
+  activate: (targetId: string, sessionId?: string) =>
+    request<{ session_id: string; target_id: string; target: Target }>(
+      `/api/targets/${targetId}/activate`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId || null }),
+      }
+    ),
 }
 
 export const recoveryApi = {
@@ -425,12 +468,8 @@ export const skillApi = {
 }
 
 // 系统
-// 后端 /tools 返回字符串数组 ["read_file", ...]，需要转成 Tool 对象
+// 后端 /tools 返回字符串数组，需要转成 Tool 对象
 const TOOL_DESCRIPTIONS: Record<string, string> = {
-  read_file: '读取文件内容',
-  write_file: '写入文件内容',
-  edit_file: '编辑文件指定部分',
-  glob: '按模式匹配文件',
   bash: '执行 shell 命令',
   service_status: '查询系统服务状态',
   disk_usage: '查看磁盘使用情况',
@@ -444,7 +483,16 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   ping_host: 'Ping 测试网络连通性',
   disk_io: '查看磁盘 IO 统计',
   system_logs: '查看系统日志',
-  todo_write: '管理待办事项',
+  target_status: '查看当前项目状态',
+  target_logs: '读取当前项目日志',
+  target_http: '检查当前项目健康接口',
+  target_list_files: '查看当前项目文件',
+  target_read_file: '读取当前项目文件',
+  target_glob: '查找当前项目文件',
+  target_write_file: '写入当前项目文件（需审批）',
+  target_edit_file: '编辑当前项目文件（需审批）',
+  target_restart: '重启当前项目（需审批）',
+  target_deploy: '部署当前项目（需审批）',
   create_task: '创建任务',
   list_tasks: '列出所有任务',
   get_task: '获取任务详情',
@@ -457,7 +505,6 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   schedule_cron: '创建定时任务',
   list_crons: '列出定时任务',
   cancel_cron: '取消定时任务',
-  connect_mcp: '连接 MCP 服务器',
 }
 
 export const systemApi = {

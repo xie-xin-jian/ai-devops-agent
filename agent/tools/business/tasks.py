@@ -1,4 +1,4 @@
-"""Task and todo tool registration."""
+"""Task tool registration."""
 
 from __future__ import annotations
 
@@ -11,40 +11,7 @@ from agent.orchestration.tasks import (
     get_task_json,
     list_tasks,
 )
-from agent.orchestration.todo import todo_write
-
-
 class TaskToolsMixin:
-    def _add_todo_tool(self):
-        schema = {
-            "name": "todo_write",
-            "description": "Set or update the current todo list for your work.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "todos": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "content": {"type": "string"},
-                                "status": {
-                                    "type": "string",
-                                    "enum": ["pending", "in_progress", "completed"],
-                                },
-                            },
-                            "required": ["content", "status"],
-                        },
-                    },
-                },
-                "required": ["todos"],
-            },
-        }
-        self.tool_registry.register(
-            schema,
-            lambda todos: todo_write(todos),
-        )
-
     def _add_task_tools(self):
         tools = [
             {

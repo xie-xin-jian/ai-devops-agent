@@ -28,7 +28,7 @@ export default function Sandboxes() {
       <div className="mx-auto max-w-6xl">
         <div className="mb-5 flex items-center justify-between">
           <p className="text-sm text-text-secondary">
-            活动容器 {data.active.length}
+            活动隔离工作区 {data.active.length}
           </p>
           <Button variant="secondary" onClick={load} disabled={loading}>
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
@@ -37,9 +37,9 @@ export default function Sandboxes() {
         </div>
 
         <Section
-          title="活动 Sandbox"
+          title="隔离工作区"
           icon={Box}
-          empty="当前没有活动容器"
+          empty="当前没有活动工作区"
           items={data.active}
           render={(item) => (
             <SandboxRow
@@ -103,7 +103,7 @@ function SandboxRow({ item }: { item: any }) {
       <td className="px-4 py-3 text-xs text-text-secondary">{item.source || '-'}</td>
       <td className="px-4 py-3">
         <div className="max-w-md truncate font-mono text-[11px] text-text-secondary">
-          {item.workspace_host_path || item.workspace_container_path || '-'}
+          {item.workspace_host_path || '-'}
         </div>
       </td>
       <td className="px-4 py-3">

@@ -37,6 +37,7 @@ from .routes.audit_route import router as audit_router
 from .routes.memory_route import router as memory_router
 from .routes.recovery_route import router as recovery_router
 from .routes.sandbox_route import router as sandbox_router
+from .routes.target_route import router as target_router
 
 
 @asynccontextmanager
@@ -118,13 +119,12 @@ def _recover_startup_state():
 
     cleanup = cleanup_orphan_sandboxes()
     if (
-        cleanup["containers_removed"]
-        or cleanup["workspaces_removed"]
+        cleanup["workspaces_removed"]
         or cleanup["errors"]
     ):
         record_event(
             "recovery.orphans_cleaned",
-            "Recovered orphaned Sandbox resources",
+            "Recovered orphaned Sandbox workspaces",
             result="failed" if cleanup["errors"] else "success",
             severity="high" if cleanup["errors"] else "info",
             actor="system",
@@ -218,6 +218,14 @@ async def chat(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if payload.reset:
         session["agent"].reset()
+    if payload.target_id:
+        from agent.targets.store import TargetStore
+
+        if TargetStore().get(payload.target_id) is None:
+            raise HTTPException(status_code=404, detail="Target not found")
+        _session_manager.activate_target(sid, payload.target_id, principal)
+    elif session["agent"].target_id:
+        _session_manager.activate_target(sid, "", principal)
     response = await run_in_threadpool(_run_agent_sync, session, payload.message)
     return {"response": response, "session_id": sid}
 
@@ -234,6 +242,14 @@ async def chat_stream(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if payload.reset:
         session["agent"].reset()
+    if payload.target_id:
+        from agent.targets.store import TargetStore
+
+        if TargetStore().get(payload.target_id) is None:
+            raise HTTPException(status_code=404, detail="Target not found")
+        _session_manager.activate_target(sid, payload.target_id, principal)
+    elif session["agent"].target_id:
+        _session_manager.activate_target(sid, "", principal)
 
     def event_generator():
         with session["run_lock"]:
@@ -331,6 +347,7 @@ app.include_router(
     tags=["recovery"],
 )
 app.include_router(sandbox_router, prefix="/api/sandboxes", tags=["sandboxes"])
+app.include_router(target_router, prefix="/api/targets", tags=["targets"])
 
 # 挂载前端静态文件
 _static_dir = Path(__file__).parent.parent / "static"

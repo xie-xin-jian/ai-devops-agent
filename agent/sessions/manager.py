@@ -79,10 +79,19 @@ class SessionManager:
         from agent.mcp.client import load_all_custom_servers
 
         load_all_custom_servers()
+        stored_target_id = (
+            str(stored_session.get("target_id") or "")
+            if stored_session
+            else ""
+        )
         agent = self.agent_factory(
             session_id=new_id,
             principal=principal,
         )
+        agent.target_id = stored_target_id
+        executor = getattr(agent, "tool_executor", None)
+        if executor is not None:
+            executor.target_id = stored_target_id
         if stored_session:
             agent.messages = stored_session.get("messages", [])
             for message in reversed(agent.messages):
@@ -112,6 +121,7 @@ class SessionManager:
                 new_id,
                 owner_id=principal.id,
                 messages=[],
+                target_id="",
             )
         record_event(
             "session.restored" if stored_session else "session.created",
@@ -131,6 +141,44 @@ class SessionManager:
             },
         )
         return new_id, session
+
+    def activate_target(
+        self,
+        session_id: str,
+        target_id: str,
+        principal: Principal,
+    ) -> dict:
+        session = self._sessions.get(str(session_id or ""))
+        if session is None:
+            session_id, session = self.get_or_create(session_id, principal)
+        self._check_access(session, principal)
+
+        identifier = str(target_id or "").strip()
+        agent = session["agent"]
+        agent.target_id = identifier
+        executor = getattr(agent, "tool_executor", None)
+        if executor is not None:
+            executor.target_id = identifier
+        self.state_store.save_session(
+            session_id,
+            owner_id=session.get("owner_id") or principal.id,
+            messages=agent.get_messages(),
+            target_id=identifier,
+        )
+        record_event(
+            "session.target_activated",
+            "Session target activated",
+            result="success",
+            severity="info",
+            actor=principal.id,
+            session_id=session_id,
+            correlation_id=session_id,
+            payload={"target_id": identifier},
+        )
+        return {
+            "session_id": session_id,
+            "target_id": identifier,
+        }
 
     def run_sync(self, session: dict, message: str) -> str:
         with session["run_lock"]:

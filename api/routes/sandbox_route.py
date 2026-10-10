@@ -1,4 +1,4 @@
-"""Active Docker Sandbox status API routes."""
+"""Active isolated Sandbox workspace status API routes."""
 
 from fastapi import APIRouter, Depends
 

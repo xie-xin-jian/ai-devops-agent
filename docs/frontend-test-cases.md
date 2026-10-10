@@ -12,13 +12,13 @@ MODEL_ID=your-model
 ANTHROPIC_BASE_URL=your-compatible-endpoint
 ```
 
-4. Docker Sandbox 执行需要可用 Docker Engine：
+4. Sandbox 文件工具使用隔离临时工作区，不再依赖 Docker Engine：
 
 ```env
-DOCKER_HOST=npipe:////./pipe/docker_engine
+SANDBOX_ENABLED=1
 ```
 
-Linux 远程 Docker 可使用 `tcp://docker-host:2376`。未配置或不可用时，Sandbox 工具会明确失败，不会回退到宿主 Shell。
+工作区只保留文件副本，执行结束后自动清理；不会执行容器内命令，也不会回退到宿主 Shell。
 
 5. `API_AUTH_USER` 和 `API_AUTH_ROLES` 只影响记忆的全局管理、用户作用域和只读边界，不再切换细粒度工具权限。
 
@@ -26,7 +26,7 @@ Linux 远程 Docker 可使用 `tcp://docker-host:2376`。未配置或不可用�
 
 | 编号 | 操作 | 示例 | 预期结果 |
 |---|---|---|---|
-| G-01 | 点击左侧导航 | 依次点击对话、任务、定时、工具、MCP、技能、审批、审计、恢复、Sandbox | 页面正常切换，无白屏 |
+| G-01 | 点击左侧导航 | 依次点击对话、任务、定时、工具、MCP、技能、审批、审计、恢复、工作区 | 页面正常切换，无白屏 |
 | G-02 | 查看服务状态 | 观察左下角状态 | 后端正常时显示绿色“服务正常” |
 | G-03 | 切换主题 | 点击右上角主题按钮 | 浅色和深色主题正常切换 |
 | G-04 | 刷新页面 | 按 `F5` | 主题设置和当前会话 ID 保留 |
@@ -48,7 +48,7 @@ Linux 远程 Docker 可使用 `tcp://docker-host:2376`。未配置或不可用�
 | C-10 | 停止生成 | 发送较长任务后点击“停止生成” | 流式输出停止，显示“已停止” |
 | C-11 | 只读巡检轨迹 | 发送“检查服务器 CPU、内存和磁盘状态” | 工具直接执行，思考轨迹显示 CPU、内存和磁盘结果，不生成审批 |
 | C-12 | 展开工具详情 | 点击工具轨迹中的工具行 | 显示输入参数、耗时和输出 |
-| C-13 | Bash 审批 | 发送“用 bash 执行 echo hello” | 生成 Pending Action，聊天气泡显示“Approval required”，不会立即执行 |
+| C-13 | 聊天内 Bash 审批 | 发送“用 bash 执行 echo hello” | 聊天输入框上方出现审批卡，批准前不会执行，批准后在目标根目录执行并显示结果 |
 | C-14 | 缺少模型 Key | 清空模型 Key 后发送消息 | 显示明确的 API Key 错误，不显示 Stream 500 |
 | C-15 | 会话列表同步 | 刷新页面后进入聊天页 | 本地会话索引和当前后端 Session 正常显示 |
 
@@ -80,8 +80,8 @@ Linux 远程 Docker 可使用 `tcp://docker-host:2376`。未配置或不可用�
 | TL-01 | 加载工具 | 打开工具页面 | 显示工具总数、策略、分类和列表 |
 | TL-02 | 展开分类 | 点击“基础工具”标题 | 分类展开，显示 `bash`、文件工具等 |
 | TL-03 | 折叠分类 | 再次点击分类标题 | 分类折叠 |
-| TL-04 | 查看参数 | 查看 `read_file` | 显示 `path` 等必填参数 |
-| TL-05 | 查看策略 | 查看 `bash` 策略 | `requires_approval=true`、`sandbox_required=true` |
+| TL-04 | 查看参数 | 查看 `bash` | 显示 `command` 必填参数 |
+| TL-05 | 查看策略 | 查看 `bash` 策略 | `requires_approval=true`、`sandbox_required=false` |
 | TL-06 | MCP 工具 | 连接 `docs` MCP 后刷新工具 | 出现 `mcp__docs__*` 工具 |
 
 ## 6. MCP
@@ -108,7 +108,7 @@ Linux 远程 Docker 可使用 `tcp://docker-host:2376`。未配置或不可用�
 
 | 编号 | 操作 | 示例 | 预期结果 |
 |---|---|---|---|
-| A-01 | 生成命令审批 | 在对话输入“用 bash 执行 echo hello” | 审批中心出现 `tool.bash` 记录 |
+| A-01 | 生成命令审批 | 在对话输入“用 bash 执行 echo hello” | 聊天内和审批中心都出现 `tool.bash` 记录 |
 | A-02 | 查看审批详情 | 展开审批记录 | 显示风险等级、工具、输入和执行步骤 |
 | A-03 | 批准并执行 | 点击“批准并执行” | Docker 正常时状态变为 `executed` 并显示输出 |
 | A-04 | Sandbox 不可用 | 关闭 Docker 后批准 Bash | 状态变为 `failed`，显示 Docker unavailable，不执行宿主命令 |

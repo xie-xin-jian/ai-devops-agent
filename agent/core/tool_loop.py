@@ -1,7 +1,6 @@
 """Tool policy, approvals, and API calls for the Agent runtime."""
 
 from agent.core.error_recovery import with_retry
-from agent.core.hooks import trigger_hooks
 from agent.observability.audit import (
     RESULT_BLOCKED,
     RESULT_SUCCESS,
@@ -36,11 +35,21 @@ class ToolLoopMixin:
             if isinstance(block.input, dict)
             else {"input": str(block.input)}
         )
-        title = f"执行命令: {str(tool_input.get('command', block.name))[:80]}"
+        if block.name == "bash":
+            title = f"执行命令: {str(tool_input.get('command', block.name))[:80]}"
+        elif block.name in {"target_write_file", "target_edit_file"}:
+            title = f"修改文件: {str(tool_input.get('path', block.name))[:80]}"
+        elif block.name == "target_restart":
+            title = "重启运维项目"
+        elif block.name == "target_deploy":
+            title = "部署运维项目"
+        else:
+            title = f"执行工具: {block.name}"
         record = self.pending_action_store.create_tool_call(
             block.name,
             tool_input,
             session_id=getattr(self, "session_id", ""),
+            target_id=getattr(self, "target_id", ""),
             run_id=getattr(self, "current_run_id", ""),
             tool_use_id=str(getattr(block, "id", "") or ""),
             owner_id=getattr(
@@ -107,20 +116,6 @@ class ToolLoopMixin:
             metadata={"requires_approval": decision.requires_approval},
         )
 
-        blocked = trigger_hooks("PreToolUse", block)
-        if blocked:
-            self._audit(
-                "policy.blocked",
-                f"PreToolUse hook blocked: {block.name}",
-                summary=str(blocked),
-                result=RESULT_BLOCKED,
-                severity=SEVERITY_HIGH,
-                tool_name=block.name,
-                correlation_id=getattr(self, "current_run_id", ""),
-                payload={"input": block.input},
-            )
-            return str(blocked)
-
         tool_input = (
             block.input
             if isinstance(block.input, dict)
@@ -134,5 +129,4 @@ class ToolLoopMixin:
             source="chat",
         )
         output = result.output
-        trigger_hooks("PostToolUse", block, output)
         return output

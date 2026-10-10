@@ -18,6 +18,7 @@ class RuntimePersistenceMixin:
             session_id,
             owner_id=self._owner_id(),
             messages=getattr(self, "messages", []),
+            target_id=getattr(self, "target_id", ""),
         )
 
     def _persist_run_state(

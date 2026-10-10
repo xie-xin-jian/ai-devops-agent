@@ -49,7 +49,6 @@ def test_compact_waits_for_tool_result_pair(monkeypatch):
         observed_history.append(deepcopy(messages))
         return [{"role": "user", "content": "[Compacted]\n\nsummary"}]
 
-    monkeypatch.setattr(pipeline, "trigger_hooks", lambda *args: None)
     monkeypatch.setattr(pipeline, "collect_background_results", lambda: [])
     monkeypatch.setattr(pipeline, "compact_history", fake_compact_history)
     monkeypatch.setattr(agent, "_compact_if_needed", lambda messages: messages)
@@ -175,7 +174,6 @@ def test_agent_retries_once_after_context_recovery(monkeypatch):
             {"before": 1000, "after": 100, "reduced": True},
         )
 
-    monkeypatch.setattr(pipeline, "trigger_hooks", lambda *args: None)
     monkeypatch.setattr(pipeline, "collect_background_results", lambda: [])
     monkeypatch.setattr(pipeline, "recover_context_overflow", fake_recover)
     monkeypatch.setattr(agent, "_compact_if_needed", lambda messages: messages)

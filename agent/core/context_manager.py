@@ -47,10 +47,31 @@ class ContextManagerMixin:
             f"Available tools: {', '.join(tool_names)}",
             f"Working directory: {WORKDIR}",
             f"Current time: {datetime.now().isoformat(timespec='seconds')}",
+            "bash runs on the host only after user approval. Its default "
+            "working directory is the active target root. Sandbox file tools "
+            "are not a substitute for target_* tools.",
             "Skills catalog:\n"
             + list_skills()
             + "\nUse load_skill(name) when a skill is relevant.",
         ]
+        target = getattr(self, "target", None)
+        if target is not None:
+            sections.append(
+                "Active project target:\n"
+                f"- id: {target.id}\n"
+                f"- name: {target.name}\n"
+                f"- root: {target.root}\n"
+                f"- service: {target.service or '(not configured)'}\n"
+                f"- health_url: {target.health_url or '(not configured)'}\n"
+                "Use target_* tools for this project. Do not use sandbox "
+                "read_file/glob for host project paths."
+            )
+        else:
+            sections.append(
+                "No active project target is selected. Ask the user to "
+                "choose one in the Targets page before inspecting or "
+                "operating a host project."
+            )
         if self._last_user_query:
             principal = getattr(self, "principal", None) or system_admin_principal()
             memories_text = self.memory.format_relevant(

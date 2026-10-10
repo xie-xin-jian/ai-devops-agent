@@ -19,7 +19,6 @@ def test_cancelled_tool_turns_keep_valid_message_pairing(monkeypatch):
         SimpleNamespace(type="tool_use", name="second", input={}, id="call_2"),
     ]
 
-    monkeypatch.setattr(pipeline, "trigger_hooks", lambda *args: None)
     monkeypatch.setattr(pipeline, "collect_background_results", lambda: [])
     monkeypatch.setattr(agent, "_compact_if_needed", lambda messages: messages)
     monkeypatch.setattr(

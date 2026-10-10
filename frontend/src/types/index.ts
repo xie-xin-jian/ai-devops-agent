@@ -87,6 +87,64 @@ export interface HealthStatus {
   workdir: string
 }
 
+// 运维目标项目
+export interface Target {
+  id: string
+  name: string
+  root: string
+  description: string
+  service: string
+  health_url: string
+  deploy_command: string
+  restart_command: string
+  log_path: string
+  created_at: number
+  updated_at: number
+}
+
+export interface TargetBrowserEntry {
+  name: string
+  path: string
+}
+
+export interface TargetBrowserResult {
+  allowed_roots: string[]
+  current: string
+  parent: string
+  entries: TargetBrowserEntry[]
+  selectable: boolean
+  message?: string
+}
+
+export interface PendingAction {
+  id: string
+  session_id: string
+  target_id: string
+  run_id: string
+  tool_use_id: string
+  action_code: string
+  title: string
+  risk_level: string
+  status: string
+  summary: string
+  payload: {
+    tool?: string
+    input?: Record<string, any>
+  }
+  steps: Array<{
+    tool: string
+    description: string
+    input?: Record<string, any>
+    status?: string
+  }>
+  impact: string
+  rollback_plan: string
+  verification: string
+  result_payload: Record<string, any>
+  created_at: number
+  updated_at: number
+}
+
 // Skill
 export interface Skill {
   name: string

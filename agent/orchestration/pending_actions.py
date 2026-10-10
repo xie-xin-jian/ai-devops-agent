@@ -50,6 +50,7 @@ def _normalize_steps(steps) -> list[dict]:
 class PendingAction:
     id: str
     session_id: str
+    target_id: str
     run_id: str
     tool_use_id: str
     owner_id: str
@@ -85,6 +86,7 @@ class PendingAction:
         return cls(
             id=str(data.get("id") or f"act_{uuid.uuid4().hex}"),
             session_id=str(data.get("session_id") or ""),
+            target_id=str(data.get("target_id") or ""),
             run_id=str(data.get("run_id") or ""),
             tool_use_id=str(data.get("tool_use_id") or ""),
             owner_id=str(data.get("owner_id") or ""),
@@ -145,6 +147,7 @@ class PendingActionStore:
         tool_input: dict,
         *,
         session_id: str,
+        target_id: str = "",
         run_id: str = "",
         tool_use_id: str = "",
         owner_id: str = "",
@@ -161,6 +164,7 @@ class PendingActionStore:
         record = PendingAction(
             id=action_id,
             session_id=str(session_id or ""),
+            target_id=str(target_id or ""),
             run_id=str(run_id or ""),
             tool_use_id=str(tool_use_id or ""),
             owner_id=str(owner_id or ""),

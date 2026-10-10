@@ -155,7 +155,6 @@ def test_candidate_approval_and_audit(tmp_path, monkeypatch):
         memory_scope="global",
         audit_path=audit_path,
     )
-    monkeypatch.setattr("agent.memory.retrieval.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
     monkeypatch.setattr("agent.memory.lifecycle.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
     monkeypatch.setattr("agent.memory.lifecycle.MEMORY_AUTO_MERGE_THRESHOLD", 0.99)
     agent.memory.add(
@@ -197,7 +196,6 @@ def test_memory_api_filters_scopes_and_approves_candidate(
     monkeypatch.setattr(config, "API_AUTH_TOKEN", "developer-token")
     monkeypatch.setattr(config, "API_AUTH_USER", "alice")
     monkeypatch.setattr(config, "API_AUTH_ROLES", ["developer"])
-    monkeypatch.setattr("agent.memory.retrieval.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
     monkeypatch.setattr("agent.memory.lifecycle.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
     monkeypatch.setattr("agent.memory.lifecycle.MEMORY_AUTO_MERGE_THRESHOLD", 0.99)
 

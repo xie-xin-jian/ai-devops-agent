@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Bot,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -10,14 +11,17 @@ import {
   MessageSquare,
   Plus,
   Send,
+  ShieldAlert,
   Square,
   Trash2,
   User,
   Wrench,
+  X,
   XCircle,
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { ToolCallRecord } from '../store/useAppStore'
+import type { PendingAction } from '../types'
 import Badge from '../components/Badge'
 import Button from '../components/Button'
 
@@ -37,6 +41,10 @@ export default function Chat() {
     switchChat,
     deleteChat,
     fetchChatSessions,
+    pendingActions,
+    pendingActionBusyId,
+    confirmPendingAction,
+    cancelPendingAction,
   } = useAppStore()
   const [input, setInput] = useState('')
   const [showTrace, setShowTrace] = useState(true)
@@ -206,6 +214,15 @@ export default function Chat() {
 
         <div className="shrink-0 border-t border-border-secondary bg-bg-secondary p-4">
           <div className="mx-auto max-w-3xl">
+            {pendingActions.length > 0 && (
+              <InlineApprovals
+                actions={pendingActions}
+                busyId={pendingActionBusyId}
+                disabled={isStreaming}
+                onConfirm={confirmPendingAction}
+                onCancel={cancelPendingAction}
+              />
+            )}
             <div className="rounded-xl border border-border-primary bg-bg-primary p-2 transition-colors focus-within:border-accent-primary">
               <textarea
                 value={input}
@@ -253,6 +270,95 @@ export default function Chat() {
       </section>
     </div>
   )
+}
+
+function InlineApprovals({
+  actions,
+  busyId,
+  disabled,
+  onConfirm,
+  onCancel,
+}: {
+  actions: PendingAction[]
+  busyId: string
+  disabled: boolean
+  onConfirm: (actionId: string) => Promise<void>
+  onCancel: (actionId: string, reason?: string) => Promise<void>
+}) {
+  return (
+    <div className="mb-3 space-y-2">
+      {actions.map((action) => (
+        <div
+          key={action.id}
+          className="rounded-xl border border-status-warning/35 bg-status-warning/10 p-3"
+        >
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-status-warning/15 text-status-warning">
+              <ShieldAlert size={16} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="text-sm font-medium">{action.title}</div>
+                <Badge variant="warning">{action.risk_level || 'approval'}</Badge>
+              </div>
+              <div className="mt-1 text-xs text-text-tertiary">
+                {action.target_id || '全局操作'} · {action.id}
+              </div>
+              <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-bg-primary/80 px-3 py-2 font-mono text-xs text-text-secondary">
+                {formatActionCommand(action)}
+              </pre>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={disabled || busyId === action.id}
+                onClick={() => onCancel(action.id, 'Rejected from chat')}
+              >
+                <X size={14} />
+                拒绝
+              </Button>
+              <Button
+                size="sm"
+                disabled={disabled || busyId === action.id}
+                onClick={() => onConfirm(action.id)}
+              >
+                {busyId === action.id ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Check size={14} />
+                )}
+                批准并执行
+              </Button>
+            </div>
+          </div>
+          {disabled && (
+            <div className="mt-2 text-[11px] text-text-tertiary">
+              等待 Agent 当前回复结束后即可审批。
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function formatActionCommand(action: PendingAction) {
+  const tool = action.payload?.tool || action.steps?.[0]?.tool || action.action_code
+  const input = action.payload?.input || action.steps?.[0]?.input || {}
+  if (tool === 'bash') {
+    return String(input.command || '(no command)')
+  }
+  if (tool === 'target_write_file') {
+    const content = String(input.content || '')
+    return `写入文件: ${input.path}\n大小: ${new Blob([content]).size} bytes\n\n${content.slice(0, 1000)}${content.length > 1000 ? '\n... (truncated)' : ''}`
+  }
+  if (tool === 'target_edit_file') {
+    return `编辑文件: ${input.path}\n\n替换前:\n${String(input.old_text || '').slice(0, 1000)}\n\n替换后:\n${String(input.new_text || '').slice(0, 1000)}`
+  }
+  if (tool === 'target_restart') return '重启当前运维项目服务'
+  if (tool === 'target_deploy') return '执行当前项目配置的部署命令'
+  return `${tool}\n${JSON.stringify(input, null, 2)}`
 }
 
 function ExecutionTrace({

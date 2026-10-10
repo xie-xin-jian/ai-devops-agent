@@ -8,6 +8,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   const titles: Record<string, string> = {
     chat: '对话',
+    targets: '运维项目',
     tasks: '任务管理',
     cron: '定时任务',
     tools: '工具库',
@@ -15,7 +16,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     actions: '审批中心',
     runs: 'Run 时间线',
     audit: '审计事件',
-    sandboxes: 'Sandbox',
+    sandboxes: '隔离工作区',
   }
 
   return (

@@ -34,9 +34,7 @@ AGENT_EXECUTE = "agent.execute"
 CRON_READ = "cron.read"
 CRON_WRITE = "cron.write"
 BACKGROUND_READ = "background.read"
-MCP_CONNECT = "mcp.connect"
 MCP_EXECUTE = "mcp.execute"
-ACTION_PROPOSE = "agent.propose"
 UNKNOWN_TOOL = "tool.unknown"
 
 _MCP_READ_ONLY_NAME = re.compile(
@@ -166,7 +164,83 @@ def _build_builtin_policies() -> dict[str, ToolPolicy]:
             required_scopes=(SHELL_EXECUTE,),
             timeout_seconds=120,
             idempotent=False,
-            sandbox_required=True,
+            sandbox_required=False,
+        ),
+        _make_policy(
+            "target_status",
+            read_only=True,
+            risk_level=READ_ONLY,
+            requires_approval=False,
+            required_scopes=(OPS_READ,),
+        ),
+        _make_policy(
+            "target_logs",
+            read_only=True,
+            risk_level=READ_ONLY,
+            requires_approval=False,
+            required_scopes=(OPS_READ,),
+        ),
+        _make_policy(
+            "target_http",
+            read_only=True,
+            risk_level=READ_ONLY,
+            requires_approval=False,
+            required_scopes=(OPS_READ,),
+        ),
+        _make_policy(
+            "target_list_files",
+            read_only=True,
+            risk_level=READ_ONLY,
+            requires_approval=False,
+            required_scopes=(OPS_READ,),
+        ),
+        _make_policy(
+            "target_read_file",
+            read_only=True,
+            risk_level=READ_ONLY,
+            requires_approval=False,
+            required_scopes=(OPS_READ,),
+        ),
+        _make_policy(
+            "target_glob",
+            read_only=True,
+            risk_level=READ_ONLY,
+            requires_approval=False,
+            required_scopes=(OPS_READ,),
+        ),
+        _make_policy(
+            "target_write_file",
+            read_only=False,
+            risk_level=MEDIUM,
+            requires_approval=True,
+            required_scopes=(FILESYSTEM_WRITE,),
+            idempotent=False,
+        ),
+        _make_policy(
+            "target_edit_file",
+            read_only=False,
+            risk_level=MEDIUM,
+            requires_approval=True,
+            required_scopes=(FILESYSTEM_WRITE,),
+            idempotent=False,
+        ),
+        _make_policy(
+            "target_restart",
+            read_only=False,
+            risk_level=HIGH,
+            requires_approval=True,
+            required_scopes=(OPS_READ,),
+            timeout_seconds=180,
+            idempotent=False,
+        ),
+        _make_policy(
+            "target_deploy",
+            read_only=False,
+            risk_level=CRITICAL,
+            requires_approval=True,
+            required_scopes=(OPS_READ,),
+            timeout_seconds=600,
+            idempotent=False,
         ),
         _make_policy(
             "service_status",
@@ -251,14 +325,6 @@ def _build_builtin_policies() -> dict[str, ToolPolicy]:
             risk_level=READ_ONLY,
             requires_approval=False,
             required_scopes=(OPS_READ,),
-        ),
-        _make_policy(
-            "todo_write",
-            read_only=False,
-            risk_level=LOW,
-            requires_approval=False,
-            required_scopes=(CONTEXT_WRITE,),
-            idempotent=False,
         ),
         _make_policy(
             "create_task",
@@ -375,7 +441,7 @@ def _build_builtin_policies() -> dict[str, ToolPolicy]:
             required_scopes=(AGENT_EXECUTE,),
             timeout_seconds=900,
             idempotent=False,
-            sandbox_required=True,
+            sandbox_required=False,
         ),
         _make_policy(
             "compact",
@@ -414,14 +480,6 @@ def _build_builtin_policies() -> dict[str, ToolPolicy]:
             risk_level=READ_ONLY,
             requires_approval=False,
             required_scopes=(CRON_READ,),
-        ),
-        _make_policy(
-            "connect_mcp",
-            read_only=False,
-            risk_level=MEDIUM,
-            requires_approval=False,
-            required_scopes=(MCP_CONNECT,),
-            idempotent=False,
         ),
         _make_policy(
             "list_background_tasks",

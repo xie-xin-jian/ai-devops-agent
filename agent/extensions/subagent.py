@@ -1,42 +1,24 @@
-from agent.core.hooks import trigger_hooks
 from agent.platform.config import WORKDIR
 from agent.platform.identity import Principal, system_admin_principal
+from agent.tools import FILE_TOOL_HANDLERS, FILE_TOOL_SCHEMAS
 from agent.tools.executor import ToolExecutor
+from agent.tools.policy import ToolPolicyContext
 from agent.tools.registry import ToolRegistry
 
 SUB_SYSTEM = (
     f"You are a coding subagent at {WORKDIR}. "
     "Complete the task, then return a concise final summary. "
-    "Do not spawn more agents."
+    "Only use the provided sandbox file tools. "
+    "Do not execute host shell commands. Do not spawn more agents."
 )
 
-SUB_TOOLS = [
-    {"name": "bash", "description": "Run a shell command.",
-     "input_schema": {"type": "object",
-                      "properties": {"command": {"type": "string"}},
-                      "required": ["command"]}},
-    {"name": "read_file", "description": "Read file contents.",
-     "input_schema": {"type": "object",
-                      "properties": {"path": {"type": "string"},
-                                     "limit": {"type": "integer"},
-                                     "offset": {"type": "integer"}},
-                      "required": ["path"]}},
-    {"name": "write_file", "description": "Write content to a file.",
-     "input_schema": {"type": "object",
-                      "properties": {"path": {"type": "string"},
-                                     "content": {"type": "string"}},
-                      "required": ["path", "content"]}},
-    {"name": "edit_file", "description": "Replace exact text in a file once.",
-     "input_schema": {"type": "object",
-                      "properties": {"path": {"type": "string"},
-                                     "old_text": {"type": "string"},
-                                     "new_text": {"type": "string"}},
-                      "required": ["path", "old_text", "new_text"]}},
-    {"name": "glob", "description": "Find files matching a glob pattern.",
-     "input_schema": {"type": "object",
-                      "properties": {"pattern": {"type": "string"}},
-                      "required": ["pattern"]}},
-]
+SUB_TOOLS = FILE_TOOL_SCHEMAS
+SUBAGENT_ALLOWED_TOOLS = frozenset({
+    "read_file",
+    "write_file",
+    "edit_file",
+    "glob",
+})
 
 def extract_text(content) -> str:
     if not isinstance(content, list):
@@ -59,16 +41,22 @@ def spawn_subagent(
     *,
     sandbox_manager=None,
     run_id: str = "",
-    tool_registry: ToolRegistry | None = None,
     principal: Principal | None = None,
 ) -> str:
-    registry = tool_registry or ToolRegistry.builtin()
+    registry = ToolRegistry()
+    registry.register_many(FILE_TOOL_SCHEMAS, FILE_TOOL_HANDLERS)
     principal = principal or system_admin_principal()
     executor = ToolExecutor(
         registry,
         sandbox_manager=sandbox_manager,
         sandbox_source=str(WORKDIR),
         principal=principal,
+        tool_context=ToolPolicyContext(
+            permissions=frozenset({"*"}),
+            allowed_tools=SUBAGENT_ALLOWED_TOOLS,
+            write_enabled=True,
+            execute_enabled=False,
+        ),
     )
     messages = [{"role": "user", "content": description}]
     for _ in range(30):
@@ -82,10 +70,7 @@ def spawn_subagent(
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            blocked = trigger_hooks("PreToolUse", block)
-            if blocked:
-                output = str(blocked)
-            else:
+            try:
                 output = executor.execute(
                     block.name,
                     block.input,
@@ -93,7 +78,8 @@ def spawn_subagent(
                     registry=registry,
                     source="subagent",
                 ).output
-                trigger_hooks("PostToolUse", block, output)
+            except Exception as exc:
+                output = f"Error: {exc}"
             results.append({"type": "tool_result",
                             "tool_use_id": block.id,
                             "content": str(output)})

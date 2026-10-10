@@ -9,9 +9,8 @@ import uuid
 from pathlib import Path
 
 from agent.observability.audit import record_event
-from agent.platform.config import BACKGROUND_DIR, WORKDIR
+from agent.platform.config import BACKGROUND_DIR
 from agent.platform.identity import Principal, system_admin_principal
-from agent.sandbox.manager import SandboxManager
 from agent.platform.storage import atomic_write_json
 from agent.tools.executor import ToolExecutor
 from agent.tools.registry import ToolRegistry
@@ -146,6 +145,7 @@ def start_background_task(
     principal: Principal | None = None,
     session_id: str = "",
     parent_run_id: str = "",
+    target_id: str = "",
 ) -> str:
     global _bg_counter
     _bg_counter += 1
@@ -164,7 +164,6 @@ def start_background_task(
     owner_id = principal.id
 
     def worker():
-        manager = None
         try:
             record_event(
                 "background.run.started",
@@ -184,12 +183,10 @@ def start_background_task(
                 },
             )
             if block_name == "bash":
-                manager = SandboxManager()
                 executor = ToolExecutor(
                     ToolRegistry.builtin(),
-                    sandbox_manager=manager,
-                    sandbox_source=str(WORKDIR),
                     principal=principal,
+                    target_id=target_id,
                 )
                 result = executor.execute(
                     "bash",
@@ -224,8 +221,6 @@ def start_background_task(
                 owner_id=owner_id,
             )
         finally:
-            if manager is not None:
-                manager.cleanup(run_id)
             _persist_task(bg_id)
 
     with background_lock:

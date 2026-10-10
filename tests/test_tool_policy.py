@@ -2,9 +2,9 @@
 
 from agent.core import comprehensive
 from agent.tools.policy import (
-    FILESYSTEM_READ,
     MEMORY_MANAGE,
     MEMORY_WRITE,
+    OPS_READ,
     ToolPolicyContext,
     evaluate_tool_policy,
     filter_tool_definitions,
@@ -80,7 +80,7 @@ def test_mcp_description_destructive_requires_approval(monkeypatch):
 
 def test_scope_filtering_hides_tools_without_permission():
     context = ToolPolicyContext(
-        permissions=frozenset({FILESYSTEM_READ}),
+        permissions=frozenset({OPS_READ}),
         write_enabled=False,
         execute_enabled=False,
     )
@@ -93,19 +93,19 @@ def test_scope_filtering_hides_tools_without_permission():
         )
     }
 
-    assert "read_file" in allowed
-    assert "glob" in allowed
-    assert "write_file" not in allowed
+    assert "target_read_file" in allowed
+    assert "target_glob" in allowed
+    assert "target_write_file" not in allowed
     assert "bash" not in allowed
     assert "search_memory" not in allowed
 
 
 def test_run_allowlist_is_enforced_before_call():
     context = ToolPolicyContext(
-        allowed_tools=frozenset({"read_file", "search_memory"}),
+        allowed_tools=frozenset({"target_read_file", "search_memory"}),
     )
 
-    read_decision = evaluate_tool_policy("read_file", context)
+    read_decision = evaluate_tool_policy("target_read_file", context)
     bash_decision = evaluate_tool_policy("bash", context)
 
     assert read_decision.allowed is True
@@ -127,11 +127,11 @@ def test_high_risk_execution_can_be_disabled():
     assert "Write operations are disabled" in decision.reason
 
 
-def test_approval_metadata_does_not_change_read_only_decisions():
+def test_target_write_requires_approval():
     context = ToolPolicyContext()
 
-    decision = evaluate_tool_policy("read_file", context)
+    decision = evaluate_tool_policy("target_write_file", context)
 
     assert decision.allowed is True
-    assert decision.requires_approval is False
-    assert decision.policy.sandbox_required is True
+    assert decision.requires_approval is True
+    assert decision.policy.sandbox_required is False

@@ -4,7 +4,6 @@
 将以下机制整合到同一个 agent loop 中，面向 DevOps 场景：
 - 工具分发 (tool dispatch)
 - 权限系统 (permission)
-- 钩子系统 (hooks)
 - 待办规划 (todo)
 - 子 agent (subagent)
 - 技能加载 (skills)
@@ -50,6 +49,7 @@ from agent.observability.audit import (
 )
 from agent.platform.identity import MEMORY_MANAGE, Principal, system_admin_principal
 from agent.sandbox.manager import SandboxManager
+from agent.targets.store import TargetStore
 
 
 class ComprehensiveAgent(
@@ -79,6 +79,7 @@ class ComprehensiveAgent(
         memory_scope: str | None = None,
         tool_context: ToolPolicyContext | None = None,
         session_id: str = "",
+        target_id: str = "",
         principal: Principal | None = None,
     ):
         base_url = ANTHROPIC_BASE_URL if ANTHROPIC_BASE_URL else None
@@ -101,6 +102,7 @@ class ComprehensiveAgent(
         self.memory_scope = requested_memory_scope
         self.tool_context = tool_context or self.principal.to_tool_policy_context()
         self.session_id = session_id
+        self.target_id = str(target_id or "")
         self.audit_enabled = bool(session_id)
         self.current_run_id = ""
         self.pending_action_store = PendingActionStore()
@@ -118,8 +120,15 @@ class ComprehensiveAgent(
             principal=self.principal,
             tool_context=self.tool_context,
             audit=self._audit,
+            target_id=self.target_id,
         )
         self.system_prompt = system_prompt or self._build_system_prompt()
+
+    @property
+    def target(self):
+        if not self.target_id:
+            return None
+        return TargetStore().get(self.target_id)
 
     def _audit(self, event_type: str, title: str, **kwargs):
         if not getattr(self, "audit_enabled", False):

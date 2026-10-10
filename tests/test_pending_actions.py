@@ -39,7 +39,6 @@ def _make_agent(tmp_path, monkeypatch):
         principal=agent.principal,
         tool_context=agent.tool_context,
     )
-    monkeypatch.setattr(pipeline, "trigger_hooks", lambda *args: None)
     return agent
 
 
@@ -124,37 +123,12 @@ def test_read_only_host_inspection_executes_without_approval(
     assert agent.pending_action_store.list() == []
 
 
-def test_write_file_uses_sandbox_without_approval(tmp_path, monkeypatch):
-    agent = _make_agent(tmp_path, monkeypatch)
-    calls = []
-
-    class FakeSandboxManager:
-        def get(self, run_id):
-            return SimpleNamespace(id="sbox-1", run_id=run_id)
-
-        def write_file(self, run_id, path, content):
-            calls.append((run_id, path, content))
-            return f"Wrote {path}"
-
-    agent.sandbox_manager = FakeSandboxManager()
-    agent.tool_executor.sandbox_manager = agent.sandbox_manager
-    output = agent._handle_tool_call(
-        SimpleNamespace(
-            name="write_file",
-            input={"path": "notes.txt", "content": "hello"},
-        )
-    )
-
-    assert output == "Wrote notes.txt"
-    assert calls == [("run-test", "notes.txt", "hello")]
-    assert agent.pending_action_store.list() == []
-
-
 def test_bash_creates_pending_action_without_executing(
     tmp_path,
     monkeypatch,
 ):
     agent = _make_agent(tmp_path, monkeypatch)
+    agent.target_id = "tgt-test"
 
     output = agent._handle_tool_call(
         SimpleNamespace(name="bash", input={"command": "echo hello"})
@@ -168,6 +142,7 @@ def test_bash_creates_pending_action_without_executing(
         "input": {"command": "echo hello"},
     }
     assert actions[0].run_id == "run-test"
+    assert actions[0].target_id == "tgt-test"
     assert agent._pending_action_notifications[0]["id"] == actions[0].id
 
 
@@ -206,7 +181,8 @@ def test_agent_stream_emits_pending_action_event(tmp_path, monkeypatch):
     assert agent.pending_action_store.list()[0].status == "pending"
 
 
-def test_execute_pending_action_runs_bash_in_sandbox(monkeypatch):
+def test_execute_pending_action_runs_bash_on_host(monkeypatch):
+    from agent.tools import executor as executor_module
     from agent.orchestration import pending_executor as pending_action_executor
 
     class FakeSandboxManager:
@@ -227,6 +203,11 @@ def test_execute_pending_action_runs_bash_in_sandbox(monkeypatch):
         "SandboxManager",
         FakeSandboxManager,
     )
+    monkeypatch.setattr(
+        executor_module,
+        "run_host_bash",
+        lambda *args, **kwargs: "exit_code=0\nhello",
+    )
 
     action = SimpleNamespace(
         id="act_test",
@@ -242,9 +223,10 @@ def test_execute_pending_action_runs_bash_in_sandbox(monkeypatch):
 
     assert result["success"] is True
     assert "hello" in result["summary"]
-    assert FakeSandboxManager.calls[0][0] == "create"
-    assert any(call[0] == "run" for call in FakeSandboxManager.calls)
-    assert FakeSandboxManager.calls[-1][0] == "cleanup"
+    assert not any(
+        call[0] in {"create", "run"}
+        for call in FakeSandboxManager.calls
+    )
 
 
 def test_build_approval_continuation_message_contains_result():

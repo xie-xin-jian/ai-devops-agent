@@ -168,6 +168,7 @@ class RecoveryStore:
         owner_id: str,
         messages: list,
         status: str = "active",
+        target_id: str | None = None,
     ) -> dict:
         if not str(session_id or "").strip():
             raise ValueError("session_id is required")
@@ -180,6 +181,11 @@ class RecoveryStore:
                 "session_id": str(session_id),
                 "owner_id": str(owner_id or existing.get("owner_id") or ""),
                 "status": str(status or "active"),
+                "target_id": (
+                    str(target_id)
+                    if target_id is not None
+                    else str(existing.get("target_id") or "")
+                ),
                 "created_at": float(existing.get("created_at") or now),
                 "updated_at": now,
                 "messages": serialize_messages(messages),

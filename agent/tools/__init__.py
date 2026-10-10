@@ -12,7 +12,7 @@ from .file_tools import (
     FILE_TOOL_HANDLERS,
 )
 from .shell import (
-    run_bash,
+    run_host_bash,
     BASH_SCHEMA,
     SHELL_TOOL_SCHEMAS,
     SHELL_TOOL_HANDLERS,
@@ -33,13 +33,21 @@ from .ops import (
     OPS_TOOL_SCHEMAS,
     OPS_TOOL_HANDLERS,
 )
+from agent.targets.tools import (
+    TARGET_TOOL_SCHEMAS,
+    TARGET_TOOL_HANDLERS,
+)
 
-ALL_TOOL_SCHEMAS = FILE_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + OPS_TOOL_SCHEMAS
+ALL_TOOL_SCHEMAS = (
+    SHELL_TOOL_SCHEMAS
+    + OPS_TOOL_SCHEMAS
+    + TARGET_TOOL_SCHEMAS
+)
 
 ALL_TOOL_HANDLERS = {
-    **FILE_TOOL_HANDLERS,
     **SHELL_TOOL_HANDLERS,
     **OPS_TOOL_HANDLERS,
+    **TARGET_TOOL_HANDLERS,
 }
 
 __all__ = [
@@ -48,7 +56,7 @@ __all__ = [
     "run_write",
     "run_edit",
     "run_glob",
-    "run_bash",
+    "run_host_bash",
     "run_service_status",
     "run_disk_usage",
     "run_system_info",
@@ -61,6 +69,8 @@ __all__ = [
     "run_ping_host",
     "run_disk_io",
     "run_system_logs",
+    "TARGET_TOOL_SCHEMAS",
+    "TARGET_TOOL_HANDLERS",
     "READ_FILE_SCHEMA",
     "WRITE_FILE_SCHEMA",
     "EDIT_FILE_SCHEMA",

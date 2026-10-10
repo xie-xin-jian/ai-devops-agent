@@ -1,7 +1,7 @@
 import { create } from 'zustand'
-import type { Message, Task, CronJob, MCPServer, Tool, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail } from '../types'
+import type { Message, Task, CronJob, MCPServer, Tool, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail, Target, PendingAction } from '../types'
 import type { StreamEvent } from '../api'
-import { chatApi, taskApi, cronApi, mcpApi, systemApi, skillApi } from '../api'
+import { actionApi, chatApi, taskApi, cronApi, mcpApi, systemApi, skillApi, targetApi } from '../api'
 
 type View =
   | 'chat'
@@ -14,6 +14,7 @@ type View =
   | 'audit'
   | 'recovery'
   | 'sandboxes'
+  | 'targets'
 
 export interface ToolCallRecord {
   turn: number
@@ -78,6 +79,20 @@ interface AppState {
   currentStatus: string       // Agent 当前状态（"正在调大模型"等）
   streamAbortController: AbortController | null
   stopStreaming: () => void
+
+  targets: Target[]
+  activeTargetId: string
+  fetchTargets: () => Promise<void>
+  createTarget: (payload: Partial<Target>) => Promise<Target>
+  updateTarget: (targetId: string, payload: Partial<Target>) => Promise<Target>
+  activateTarget: (targetId: string) => Promise<void>
+  deleteTarget: (targetId: string) => Promise<void>
+
+  pendingActions: PendingAction[]
+  pendingActionBusyId: string
+  fetchPendingActions: () => Promise<void>
+  confirmPendingAction: (actionId: string) => Promise<void>
+  cancelPendingAction: (actionId: string, reason?: string) => Promise<void>
 
   tasks: Task[]
   fetchTasks: () => Promise<void>
@@ -196,6 +211,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   liveText: '',
   currentStatus: '',
   streamAbortController: null,
+  targets: [],
+  activeTargetId: '',
+  pendingActions: [],
+  pendingActionBusyId: '',
 
   fetchMessages: async () => {
     const sessionId = get().sessionId
@@ -240,10 +259,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         (event: StreamEvent) => {
           switch (event.type) {
             case 'pending_action':
-              set({
-                currentStatus: event.pending_action
-                  ? `待审批：${event.pending_action.title}`
-                  : '已生成待审批动作',
+              set((state) => {
+                const pending = event.pending_action
+                if (!pending) {
+                  return {
+                    currentStatus: '已生成待审批动作',
+                  }
+                }
+                const nextAction = pending as PendingAction
+                return {
+                  pendingActions: state.pendingActions.some(
+                    (item) => item.id === nextAction.id
+                  )
+                    ? state.pendingActions
+                    : [nextAction, ...state.pendingActions],
+                  currentStatus: `待审批：${pending.title}`,
+                }
               })
               break
             case 'status':
@@ -294,6 +325,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                   currentStatus: `完成，共 ${event.total_turns} 轮`,
                 }
               })
+              void get().fetchPendingActions()
               break
             case 'cancelled':
               set((s) => {
@@ -324,6 +356,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             set({ sessionId })
           }
         },
+        get().activeTargetId,
         controller.signal,
       )
       if (nextSessionId && nextSessionId !== get().sessionId) {
@@ -364,6 +397,111 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  fetchTargets: async () => {
+    try {
+      const res = await targetApi.list(get().sessionId)
+      const activeTargetId = res.active_target_id || ''
+      set({
+        targets: res.targets || [],
+        activeTargetId,
+      })
+    } catch {
+      set({ targets: [] })
+    }
+  },
+
+  createTarget: async (payload) => {
+    const target = await targetApi.create(payload)
+    set((state) => ({
+      targets: [...state.targets, target].sort((a, b) => a.name.localeCompare(b.name)),
+    }))
+    return target
+  },
+
+  updateTarget: async (targetId, payload) => {
+    const target = await targetApi.update(targetId, payload)
+    set((state) => ({
+      targets: state.targets
+        .map((item) => (item.id === targetId ? target : item))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    }))
+    return target
+  },
+
+  activateTarget: async (targetId) => {
+    if (!targetId) {
+      set({ activeTargetId: '', currentStatus: '未选择运维项目' })
+      return
+    }
+    const result = await targetApi.activate(targetId, get().sessionId)
+    if (result.session_id && result.session_id !== get().sessionId) {
+      localStorage.setItem('session_id', result.session_id)
+      set({ sessionId: result.session_id })
+    }
+    set({
+      activeTargetId: targetId,
+      currentStatus: `当前项目：${result.target.name}`,
+    })
+  },
+
+  deleteTarget: async (targetId) => {
+    await targetApi.remove(targetId)
+    set((state) => ({
+      targets: state.targets.filter((target) => target.id !== targetId),
+      activeTargetId: state.activeTargetId === targetId ? '' : state.activeTargetId,
+    }))
+  },
+
+  fetchPendingActions: async () => {
+    const sessionId = get().sessionId
+    if (!sessionId) {
+      set({ pendingActions: [] })
+      return
+    }
+    try {
+      const result = await actionApi.pending(sessionId, 'pending')
+      set({ pendingActions: result.actions || [] })
+    } catch {
+      // Approval discovery should not block the chat view.
+    }
+  },
+
+  confirmPendingAction: async (actionId) => {
+    set({ pendingActionBusyId: actionId })
+    try {
+      await actionApi.confirm(actionId)
+      set((state) => ({
+        pendingActions: state.pendingActions.filter(
+          (action) => action.id !== actionId
+        ),
+      }))
+      await get().fetchMessages()
+      await get().fetchPendingActions()
+      get().showToast('success', '命令已批准并执行')
+    } catch (error: any) {
+      get().showToast('error', error.message || '审批执行失败')
+    } finally {
+      set({ pendingActionBusyId: '' })
+    }
+  },
+
+  cancelPendingAction: async (actionId, reason = 'Rejected from chat') => {
+    set({ pendingActionBusyId: actionId })
+    try {
+      await actionApi.cancel(actionId, 'api-user', reason)
+      set((state) => ({
+        pendingActions: state.pendingActions.filter(
+          (action) => action.id !== actionId
+        ),
+      }))
+      get().showToast('success', '命令已拒绝')
+    } catch (error: any) {
+      get().showToast('error', error.message || '拒绝失败')
+    } finally {
+      set({ pendingActionBusyId: '' })
+    }
+  },
+
   newChat: () => {
     if (get().isStreaming) {
       get().stopStreaming()
@@ -377,6 +515,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       toolHistory: [],
       isStreaming: false,
       isLoading: false,
+      pendingActions: [],
     })
     localStorage.removeItem('session_id')
   },
@@ -396,6 +535,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
     localStorage.setItem('session_id', sessionId)
     await get().fetchMessages()
+    await get().fetchTargets()
+    await get().fetchPendingActions()
     set({ currentStatus: '' })
   },
 

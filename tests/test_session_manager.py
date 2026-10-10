@@ -26,6 +26,9 @@ class FakeAgent:
         self.messages = []
         self.reset_called = True
 
+    def get_messages(self):
+        return list(self.messages)
+
 
 def _store(tmp_path):
     return RecoveryStore(
@@ -106,3 +109,19 @@ def test_session_manager_expires_only_live_state(tmp_path):
     assert manager.cleanup_expired() == [session_id]
     assert manager.get(session_id) is None
     assert store.get_session(session_id) is not None
+
+
+def test_session_manager_binds_target_to_session(tmp_path):
+    store = _store(tmp_path)
+    manager = SessionManager(
+        state_store=store,
+        agent_factory=FakeAgent,
+    )
+    principal = principal_from_roles("alice", {"developer"})
+    session_id, session = manager.get_or_create(None, principal)
+
+    result = manager.activate_target(session_id, "tgt_test", principal)
+
+    assert result["target_id"] == "tgt_test"
+    assert session["agent"].target_id == "tgt_test"
+    assert store.get_session(session_id)["target_id"] == "tgt_test"

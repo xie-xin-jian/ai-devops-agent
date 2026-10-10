@@ -5,24 +5,15 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 
-def _env_int(name: str, default: int, minimum: int | None = None) -> int:
-    try:
-        value = int(os.environ.get(name, str(default)))
-    except (TypeError, ValueError):
-        value = default
-    if minimum is not None:
-        value = max(minimum, value)
-    return value
-
-
-def _env_float(name: str, default: float, minimum: float | None = None) -> float:
-    try:
-        value = float(os.environ.get(name, str(default)))
-    except (TypeError, ValueError):
-        value = default
-    if minimum is not None:
-        value = max(minimum, value)
-    return value
+def _env_path_list(name: str) -> tuple[Path, ...]:
+    raw = os.environ.get(name, "")
+    paths = []
+    for item in raw.split(","):
+        value = item.strip()
+        if not value:
+            continue
+        paths.append(Path(value).expanduser().resolve())
+    return tuple(paths)
 
 
 if os.getenv("ANTHROPIC_BASE_URL"):
@@ -56,6 +47,10 @@ API_AUTH_ROLES = [
 ENABLE_UNSAFE_MCP_SHELL = os.environ.get(
     "ENABLE_UNSAFE_MCP_SHELL", ""
 ).strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_MOCK_MCP = os.environ.get(
+    "ENABLE_MOCK_MCP", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+TARGET_BROWSE_ROOTS = _env_path_list("TARGET_BROWSE_ROOTS")
 
 SKILLS_DIR = WORKDIR / "skills"
 TRANSCRIPT_DIR = DATA_DIR / ".transcripts"
@@ -69,36 +64,11 @@ SANDBOX_DIR = DATA_DIR / ".sandboxes"
 SESSIONS_DIR = DATA_DIR / ".sessions"
 RUNS_DIR = DATA_DIR / ".runs"
 BACKGROUND_DIR = DATA_DIR / ".background"
+TARGETS_DIR = DATA_DIR / ".targets"
 LOG_DIR = DATA_DIR / "logs"
 
 SANDBOX_ENABLED = os.environ.get(
     "SANDBOX_ENABLED", "1"
-).strip().lower() in {"1", "true", "yes", "on"}
-SANDBOX_IMAGE = os.environ.get(
-    "SANDBOX_IMAGE", "python:3.11-slim"
-).strip() or "python:3.11-slim"
-SANDBOX_TIMEOUT_SECONDS = _env_int(
-    "SANDBOX_TIMEOUT_SECONDS",
-    120,
-    minimum=1,
-)
-SANDBOX_MEMORY_LIMIT = os.environ.get(
-    "SANDBOX_MEMORY_LIMIT", "512m"
-).strip() or "512m"
-SANDBOX_CPUS = _env_float("SANDBOX_CPUS", 1.0, minimum=0.1)
-SANDBOX_PIDS_LIMIT = _env_int(
-    "SANDBOX_PIDS_LIMIT",
-    128,
-    minimum=16,
-)
-SANDBOX_NETWORK_DISABLED = os.environ.get(
-    "SANDBOX_NETWORK_DISABLED", "1"
-).strip().lower() in {"1", "true", "yes", "on"}
-SANDBOX_USER = os.environ.get(
-    "SANDBOX_USER", "65534:65534"
-).strip() or "65534:65534"
-SANDBOX_ALLOW_LOCAL_DOCKER = os.environ.get(
-    "SANDBOX_ALLOW_LOCAL_DOCKER", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
 
 try:
@@ -141,14 +111,10 @@ DEFAULT_MAX_TOKENS = 8000
 ESCALATED_MAX_TOKENS = 16000
 MAX_RETRIES = 3
 MAX_CONSECUTIVE_529 = 2
-MAX_RECOVERY_RETRIES = 2
 BASE_DELAY_MS = 500
 CONTEXT_LIMIT = 50000
 KEEP_RECENT_TOOL_RESULTS = 3
 PERSIST_THRESHOLD = 30000
-CONTINUATION_PROMPT = "Continue from the previous response. Do not repeat completed work."
-
-CLI_ACTIVE = False
 
 # CORS 允许的来源（逗号分隔），生产环境务必配置具体域名
 ALLOWED_ORIGINS = [

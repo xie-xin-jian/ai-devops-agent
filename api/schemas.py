@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str | None = None
+    target_id: str | None = None
     reset: bool = False
 
 
@@ -72,3 +73,22 @@ class MCPStdioConnectRequest(BaseModel):
 class MCPSseConnectRequest(BaseModel):
     name: str = Field(min_length=1)
     url: str = Field(min_length=1)
+
+
+class TargetCreateRequest(BaseModel):
+    name: str = ""
+    root: str = Field(min_length=1)
+    description: str = ""
+    service: str = ""
+    health_url: str = ""
+    deploy_command: str = ""
+    restart_command: str = ""
+    log_path: str = ""
+
+
+class TargetUpdateRequest(TargetCreateRequest):
+    pass
+
+
+class TargetActivateRequest(BaseModel):
+    session_id: str | None = None

@@ -44,9 +44,6 @@ class Principal:
             )
         return True
 
-    def has_all(self, permissions) -> bool:
-        return all(self.has(permission) for permission in permissions or ())
-
     def missing(self, permissions) -> list[str]:
         return [
             permission

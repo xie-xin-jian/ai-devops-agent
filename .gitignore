@@ -19,6 +19,7 @@ build/
 /.mailboxes/
 /logs/
 .pytest-*/
+.pytest_tmp_*/
 
 # 运行时生成的数据
 .tasks/

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+import agent.platform.config as config
 from agent.mcp.registry import MCPClient, _set_mcp_context, mcp_clients
 
 
@@ -148,6 +149,11 @@ def connect_mcp(
     source: str = "mcp",
 ) -> str:
     """连接一个 MCP 服务器并发现其工具。"""
+    if not config.ENABLE_MOCK_MCP:
+        return (
+            "Error: built-in mock MCP is disabled. "
+            "Set ENABLE_MOCK_MCP=1 only for local demos."
+        )
     if name in mcp_clients:
         return f"MCP server '{name}' already connected"
     factory = MOCK_SERVERS.get(name)

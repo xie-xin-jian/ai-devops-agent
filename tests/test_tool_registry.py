@@ -8,7 +8,7 @@ def test_agent_catalog_is_built_from_one_registry():
     schemas = ComprehensiveAgent.get_tool_catalog()
     names = [schema["name"] for schema in schemas]
 
-    assert len(names) == 40
+    assert len(names) == 44
     assert len(names) == len(set(names))
     assert {"bash", "cpu_usage", "add_memory", "schedule_cron"}.issubset(
         names
