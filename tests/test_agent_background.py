@@ -2,7 +2,10 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.core import comprehensive
+from agent.orchestration.approval_coordinator import ToolApprovalRequired
 from agent.orchestration.pending_actions import PendingActionStore
 from agent.platform.identity import system_admin_principal
 from agent.tools.executor import ToolExecutor
@@ -21,7 +24,6 @@ def test_bash_waits_for_approval_before_background_start(
     agent.pending_action_store = PendingActionStore(
         tmp_path / "actions.json"
     )
-    agent._pending_action_notifications = []
     agent._last_user_query = "npm install"
     agent.audit_enabled = False
     agent.current_run_id = "run-bg"
@@ -35,11 +37,12 @@ def test_bash_waits_for_approval_before_background_start(
     )
 
 
-    output = agent._handle_tool_call(
-        SimpleNamespace(name="bash", input={"command": "npm install"})
-    )
+    with pytest.raises(ToolApprovalRequired) as exc:
+        agent._handle_tool_call(
+            SimpleNamespace(name="bash", input={"command": "npm install"})
+        )
 
-    assert output.startswith("Approval required")
+    assert exc.value.record.payload["tool"] == "bash"
 
 
 def test_approved_background_bash_starts_background(monkeypatch):

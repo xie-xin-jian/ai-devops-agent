@@ -107,7 +107,6 @@ class ComprehensiveAgent(
         self.current_run_id = ""
         self.pending_action_store = PendingActionStore()
         self.state_store = RecoveryStore()
-        self._pending_action_notifications: list[dict] = []
         self.sandbox_manager = SandboxManager()
         self._last_user_query = ""
         self.messages: list = []
@@ -152,7 +151,6 @@ class ComprehensiveAgent(
         self.messages = []
         self._pending_compaction = False
         self.recovery = RecoveryState()
-        self._pending_action_notifications = []
         self.current_run_id = ""
         self._current_turn = 0
         store = getattr(self, "state_store", None)

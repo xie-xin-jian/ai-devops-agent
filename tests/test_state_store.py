@@ -148,7 +148,6 @@ def test_agent_run_persists_session_and_completed_run(
     agent.model = "test-model"
     agent.recovery = SimpleNamespace(current_model="test-model")
     agent._pending_compaction = False
-    agent._pending_action_notifications = []
     agent._last_user_query = ""
     agent.sandbox_manager = None
     agent._current_turn = 0

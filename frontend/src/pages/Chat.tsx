@@ -215,12 +215,11 @@ export default function Chat() {
         <div className="shrink-0 border-t border-border-secondary bg-bg-secondary p-4">
           <div className="mx-auto max-w-3xl">
             {pendingActions.length > 0 && (
-              <InlineApprovals
-                actions={pendingActions}
-                busyId={pendingActionBusyId}
-                disabled={isStreaming}
-                onConfirm={confirmPendingAction}
-                onCancel={cancelPendingAction}
+      <InlineApprovals
+        actions={pendingActions}
+        busyId={pendingActionBusyId}
+        onConfirm={confirmPendingAction}
+        onCancel={cancelPendingAction}
               />
             )}
             <div className="rounded-xl border border-border-primary bg-bg-primary p-2 transition-colors focus-within:border-accent-primary">
@@ -275,19 +274,22 @@ export default function Chat() {
 function InlineApprovals({
   actions,
   busyId,
-  disabled,
   onConfirm,
   onCancel,
 }: {
   actions: PendingAction[]
   busyId: string
-  disabled: boolean
   onConfirm: (actionId: string) => Promise<void>
   onCancel: (actionId: string, reason?: string) => Promise<void>
 }) {
+  const action = actions[0]
+  if (!action) return null
+
   return (
     <div className="mb-3 space-y-2">
-      {actions.map((action) => (
+      <div className="text-[11px] text-text-tertiary">
+        待审批 {actions.length} 条，按创建顺序逐条处理
+      </div>
         <div
           key={action.id}
           className="rounded-xl border border-status-warning/35 bg-status-warning/10 p-3"
@@ -312,7 +314,7 @@ function InlineApprovals({
               <Button
                 size="sm"
                 variant="secondary"
-                disabled={disabled || busyId === action.id}
+                disabled={busyId === action.id}
                 onClick={() => onCancel(action.id, 'Rejected from chat')}
               >
                 <X size={14} />
@@ -320,7 +322,7 @@ function InlineApprovals({
               </Button>
               <Button
                 size="sm"
-                disabled={disabled || busyId === action.id}
+                disabled={busyId === action.id}
                 onClick={() => onConfirm(action.id)}
               >
                 {busyId === action.id ? (
@@ -332,13 +334,7 @@ function InlineApprovals({
               </Button>
             </div>
           </div>
-          {disabled && (
-            <div className="mt-2 text-[11px] text-text-tertiary">
-              等待 Agent 当前回复结束后即可审批。
-            </div>
-          )}
         </div>
-      ))}
     </div>
   )
 }

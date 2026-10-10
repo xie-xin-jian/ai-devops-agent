@@ -272,7 +272,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                     (item) => item.id === nextAction.id
                   )
                     ? state.pendingActions
-                    : [nextAction, ...state.pendingActions],
+                    : [...state.pendingActions, nextAction],
                   currentStatus: `待审批：${pending.title}`,
                 }
               })
@@ -460,7 +460,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     try {
       const result = await actionApi.pending(sessionId, 'pending')
-      set({ pendingActions: result.actions || [] })
+      set({
+        pendingActions: [...(result.actions || [])].sort(
+          (a, b) => a.created_at - b.created_at
+        ),
+      })
     } catch {
       // Approval discovery should not block the chat view.
     }
@@ -474,9 +478,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         pendingActions: state.pendingActions.filter(
           (action) => action.id !== actionId
         ),
+        currentStatus: '审批已提交，Agent 继续执行...',
       }))
-      await get().fetchMessages()
-      await get().fetchPendingActions()
+      if (!get().isStreaming) {
+        await get().fetchMessages()
+        await get().fetchPendingActions()
+      }
       get().showToast('success', '命令已批准并执行')
     } catch (error: any) {
       get().showToast('error', error.message || '审批执行失败')

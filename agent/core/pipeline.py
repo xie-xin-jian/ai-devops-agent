@@ -20,6 +20,7 @@ from agent.observability.audit import (
     SEVERITY_INFO,
 )
 from agent.observability.logger import logger
+from agent.orchestration.approval_coordinator import ToolApprovalRequired
 from agent.orchestration.background import collect_background_results
 from agent.sessions.state_store import (
     RUN_STATUS_CANCELED,
@@ -408,6 +409,22 @@ class AgentPipelineMixin:
                 self._mark_run_unsafe(block.name)
                 try:
                     output = self._handle_tool_call(block)
+                except ToolApprovalRequired as approval:
+                    yield {
+                        "type": "pending_action",
+                        "pending_action": approval.record.to_dict(),
+                        "turn": turn + 1,
+                    }
+                    self._persist_run_state(
+                        status="running",
+                        phase="waiting_approval",
+                        safe_to_resume=False,
+                        active_tool=block.name,
+                    )
+                    output = self._await_tool_approval(
+                        approval.record,
+                        cancel_event,
+                    )
                 except Exception as tool_err:
                     output = f"Error: {tool_err}"
                     logger.error(f"[turn {turn+1}] tool {block.name} 异常: {tool_err}")
@@ -419,7 +436,7 @@ class AgentPipelineMixin:
                 output_str = str(output)
                 blocked_prefixes = (
                     "Policy denied:",
-                    "Approval required:",
+                    "Approval rejected or cancelled:",
                 )
                 if output_str.startswith(blocked_prefixes):
                     tool_result = RESULT_BLOCKED
@@ -456,20 +473,6 @@ class AgentPipelineMixin:
                     "turn": turn + 1,
                     "duration_ms": duration_ms,
                 }
-
-                pending_notifications = getattr(
-                    self,
-                    "_pending_action_notifications",
-                    None,
-                )
-                if pending_notifications:
-                    while pending_notifications:
-                        pending_action = pending_notifications.pop(0)
-                        yield {
-                            "type": "pending_action",
-                            "pending_action": pending_action,
-                            "turn": turn + 1,
-                        }
 
                 results.append(
                     {

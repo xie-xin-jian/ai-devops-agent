@@ -16,6 +16,7 @@ from agent.orchestration.pending_actions import (
     STATUS_FAILED,
 )
 from agent.orchestration.pending_executor import execute_pending_action
+from agent.orchestration.approval_coordinator import approval_coordinator
 from agent.orchestration.pending_executor import (
     build_approval_continuation_message,
 )
@@ -115,6 +116,26 @@ async def confirm_pending_action(
         if not _can_access_action(principal, current):
             raise HTTPException(status_code=403, detail="Permission denied")
         action = store.confirm(action_id, actor=actor)
+        if approval_coordinator.resolve(
+            action_id,
+            approved=True,
+            actor=actor,
+        ):
+            record_event(
+                "pending_action.confirmed",
+                f"Pending action confirmed: {action_id}",
+                summary=action.summary,
+                result=RESULT_SUCCESS,
+                severity=SEVERITY_INFO,
+                actor=actor,
+                session_id=action.session_id,
+                action_id=action.id,
+                action_code=action.action_code,
+                risk_level=action.risk_level,
+                correlation_id=action.id,
+                payload={"active_run": True},
+            )
+            return action.to_dict()
         try:
             result = await run_in_threadpool(
                 execute_pending_action,
@@ -217,6 +238,31 @@ async def cancel_pending_action(
             actor=actor,
             reason=reason,
         )
+        if approval_coordinator.resolve(
+            action_id,
+            approved=False,
+            actor=actor,
+            reason=reason or "rejected",
+        ):
+            record_event(
+                "pending_action.canceled",
+                f"Pending action canceled: {action_id}",
+                summary=reason,
+                result=RESULT_CANCELED,
+                severity=SEVERITY_INFO,
+                actor=actor,
+                session_id=action.session_id,
+                action_id=action.id,
+                action_code=action.action_code,
+                risk_level=action.risk_level,
+                correlation_id=action.id,
+                payload={
+                    "reason": reason,
+                    "canceled_at": action.canceled_at,
+                    "active_run": True,
+                },
+            )
+            return action.to_dict()
     except HTTPException:
         raise
     except KeyError as exc:

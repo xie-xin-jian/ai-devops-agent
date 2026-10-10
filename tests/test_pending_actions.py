@@ -6,6 +6,10 @@ import pytest
 
 from agent.core import comprehensive
 from agent.core import pipeline
+from agent.orchestration.approval_coordinator import (
+    ToolApprovalRequired,
+    approval_coordinator,
+)
 from agent.orchestration.pending_actions import (
     STATUS_CANCELED,
     STATUS_CONFIRMED,
@@ -27,7 +31,6 @@ def _make_agent(tmp_path, monkeypatch):
     agent.pending_action_store = PendingActionStore(
         tmp_path / "actions.json"
     )
-    agent._pending_action_notifications = []
     agent._last_user_query = "test request"
     agent.audit_enabled = False
     agent.current_run_id = "run-test"
@@ -130,11 +133,12 @@ def test_bash_creates_pending_action_without_executing(
     agent = _make_agent(tmp_path, monkeypatch)
     agent.target_id = "tgt-test"
 
-    output = agent._handle_tool_call(
-        SimpleNamespace(name="bash", input={"command": "echo hello"})
-    )
+    with pytest.raises(ToolApprovalRequired) as exc:
+        agent._handle_tool_call(
+            SimpleNamespace(name="bash", input={"command": "echo hello"})
+        )
 
-    assert output.startswith("Approval required: pending action act_")
+    assert exc.value.record.id.startswith("act_")
     actions = agent.pending_action_store.list()
     assert len(actions) == 1
     assert actions[0].payload == {
@@ -143,7 +147,6 @@ def test_bash_creates_pending_action_without_executing(
     }
     assert actions[0].run_id == "run-test"
     assert actions[0].target_id == "tgt-test"
-    assert agent._pending_action_notifications[0]["id"] == actions[0].id
 
 
 def test_agent_stream_emits_pending_action_event(tmp_path, monkeypatch):
@@ -169,6 +172,11 @@ def test_agent_stream_emits_pending_action_event(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "collect_background_results", lambda: [])
     monkeypatch.setattr(agent, "_compact_if_needed", lambda messages: messages)
     monkeypatch.setattr(agent, "_call_api", lambda messages: next(responses))
+    monkeypatch.setattr(
+        agent,
+        "_await_tool_approval",
+        lambda record, cancel_event=None: "approved output",
+    )
 
     events = list(agent.run_stream("echo hello"))
     pending_events = [
@@ -317,3 +325,48 @@ def test_pending_action_api_executes_and_cancels(tmp_path, monkeypatch):
     )
     assert rejected.status_code == 200
     assert rejected.json()["status"] == STATUS_CANCELED
+
+
+def test_active_approval_api_wakes_waiter_without_executing_twice(
+    tmp_path,
+    monkeypatch,
+):
+    from fastapi.testclient import TestClient
+    from api.routes import action_route
+
+    store_path = tmp_path / "active-actions.json"
+    monkeypatch.setattr(
+        "agent.orchestration.pending_actions.PENDING_ACTIONS_PATH",
+        store_path,
+    )
+    store = PendingActionStore(store_path)
+    action = store.create_tool_call(
+        "bash",
+        {"command": "echo active"},
+        session_id="active-session",
+        owner_id="system",
+    )
+    approval_coordinator.register(action.id)
+    executed = []
+    monkeypatch.setattr(
+        action_route,
+        "execute_pending_action",
+        lambda *args, **kwargs: executed.append(True),
+    )
+
+    from api.main import app
+    client = TestClient(app)
+    response = client.post(
+        f"/api/actions/pending/{action.id}/confirm",
+        json={},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == STATUS_CONFIRMED
+    assert executed == []
+    decision = approval_coordinator.wait(
+        action.id,
+        timeout_seconds=1,
+    )
+    assert decision.approved is True
+    approval_coordinator.clear(action.id)

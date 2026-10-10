@@ -1,6 +1,10 @@
 """Tool policy, approvals, and API calls for the Agent runtime."""
 
 from agent.core.error_recovery import with_retry
+from agent.orchestration.approval_coordinator import (
+    ToolApprovalRequired,
+    approval_coordinator,
+)
 from agent.observability.audit import (
     RESULT_BLOCKED,
     RESULT_SUCCESS,
@@ -83,7 +87,6 @@ class ToolLoopMixin:
                 "steps": record.steps,
             },
         )
-        self._pending_action_notifications.append(record.to_dict())
         return record
 
     def _handle_tool_call(self, block):
@@ -108,10 +111,7 @@ class ToolLoopMixin:
 
         if decision.requires_approval:
             record = self._create_tool_approval(block, decision)
-            return (
-                f"Approval required: pending action {record.id}. "
-                "The command will run only after approval."
-            )
+            raise ToolApprovalRequired(record)
 
         self._audit(
             "policy.allowed",
@@ -139,3 +139,67 @@ class ToolLoopMixin:
         )
         output = result.output
         return output
+
+    def _await_tool_approval(self, record, cancel_event=None) -> str:
+        """Wait for approval and continue the same Agent run."""
+        from agent.orchestration.pending_actions import (
+            STATUS_EXECUTED,
+            STATUS_FAILED,
+        )
+        from agent.orchestration.pending_executor import execute_pending_action
+
+        approval_coordinator.register(record.id)
+        try:
+            decision = approval_coordinator.wait(
+                record.id,
+                cancel_event=cancel_event,
+            )
+            if not decision.approved:
+                current = self.pending_action_store.get(record.id)
+                if current is not None and current.status == "pending":
+                    self.pending_action_store.cancel(
+                        record.id,
+                        actor=decision.actor or "user",
+                        reason=decision.reason or "rejected",
+                    )
+                return (
+                    "Approval rejected or cancelled: "
+                    f"{decision.reason or 'not approved'}. "
+                    "The command was not executed."
+                )
+
+            result = execute_pending_action(record, self.principal)
+            status = (
+                STATUS_EXECUTED
+                if result.get("success")
+                else STATUS_FAILED
+            )
+            self.pending_action_store.finish(
+                record.id,
+                status=status,
+                result_payload=result,
+            )
+            self._audit(
+                (
+                    "pending_action.executed"
+                    if result.get("success")
+                    else "pending_action.execution_failed"
+                ),
+                f"Pending action finished: {record.id}",
+                summary=str(result.get("summary") or ""),
+                result="success" if result.get("success") else "failed",
+                severity="info" if result.get("success") else "high",
+                actor=decision.actor or "user",
+                session_id=getattr(self, "session_id", ""),
+                action_id=record.id,
+                action_code=record.action_code,
+                risk_level=record.risk_level,
+                correlation_id=record.id,
+                payload={
+                    "execution_enabled": True,
+                    "success": result.get("success"),
+                },
+            )
+            return str(result.get("summary") or "(no output)")
+        finally:
+            approval_coordinator.clear(record.id)

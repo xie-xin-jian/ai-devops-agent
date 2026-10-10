@@ -6,6 +6,7 @@ import pytest
 
 from agent.core import comprehensive
 from agent.orchestration.pending_actions import PendingActionStore
+from agent.orchestration.approval_coordinator import ToolApprovalRequired
 from agent.platform.identity import system_admin_principal
 from agent.sandbox.manager import (
     SandboxManager,
@@ -84,7 +85,6 @@ def _make_agent(tmp_path, manager):
     agent.pending_action_store = PendingActionStore(
         tmp_path / "agent-actions.json"
     )
-    agent._pending_action_notifications = []
     agent._last_user_query = "echo approved"
     agent.tool_context = None
     agent.audit_enabled = False
@@ -111,14 +111,15 @@ def test_agent_requires_approval_before_host_bash(tmp_path, monkeypatch):
         ),
     )
 
-    output = agent._handle_tool_call(
-        SimpleNamespace(
-            name="bash",
-            input={"command": "echo approved"},
+    with pytest.raises(ToolApprovalRequired) as exc:
+        agent._handle_tool_call(
+            SimpleNamespace(
+                name="bash",
+                input={"command": "echo approved"},
+            )
         )
-    )
 
-    assert output.startswith("Approval required")
+    assert exc.value.record.payload["tool"] == "bash"
     assert agent.pending_action_store.list()[0].payload["tool"] == "bash"
 
 
