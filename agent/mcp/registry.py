@@ -73,8 +73,16 @@ def _mcp_client_visible(client: MCPClient, context: dict | None) -> bool:
         return True
     owner_id = str(context.get("owner_id") or "")
     session_id = str(context.get("session_id") or "")
+    # Session-pinned clients belong to a single session and stay private.
     if client.session_id:
         return bool(session_id and client.session_id == session_id)
+    # System/cron agents act as the "system" principal (or carry no owner at all).
+    # They must see every non-session MCP server -- exactly what the system prompt
+    # advertises via list_connected_mcp(). Otherwise the model is offered a tool
+    # that is missing from the runtime registry and the call fails with
+    # "No executor registered for tool ...".
+    if owner_id in ("", "system"):
+        return True
     if client.owner_id:
         return bool(owner_id and client.owner_id == owner_id)
     return True
