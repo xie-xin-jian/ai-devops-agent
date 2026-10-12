@@ -16,72 +16,108 @@ from agent.tools.policy import evaluate_tool_policy
 
 class ToolLoopMixin:
     def _repair_message_sequence(self, messages: list) -> list:
-        """修复消息序列：确保每个 tool_use 后面紧接的 user 消息里有对应 tool_result。
-
-        Anthropic 要求 assistant 的 tool_use 必须在**紧接的下一条** user 消息里
-        有对应的 tool_result，否则 API 报 400。
-        当 Agent run 在工具执行（尤其是审批等待）期间被中断时，
-        会残留 tool_use 而缺少 tool_result，此方法自动补齐。
-        """
+        """Ensure each tool_use has its tool_result in the immediately next user message."""
         if not messages:
             return messages
 
-        # 收集所有已出现的 tool_result id
-        all_result_ids: set[str] = set()
-        for msg in messages:
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "tool_result":
-                    tid = block.get("tool_use_id")
-                    if tid:
-                        all_result_ids.add(tid)
+        def _value(block, name, default=None):
+            if isinstance(block, dict):
+                return block.get(name, default)
+            return getattr(block, name, default)
 
-        repaired: list = []
-        for i, msg in enumerate(messages):
-            repaired.append(msg)
-            if msg.get("role") != "assistant":
-                continue
-            content = msg.get("content")
-            if not isinstance(content, list):
-                continue
-            tool_use_ids = [
-                block.get("id")
-                for block in content
-                if isinstance(block, dict)
-                and block.get("type") == "tool_use"
-                and block.get("id")
-            ]
-            if not tool_use_ids:
-                continue
-            # 找出该 assistant 消息中缺失对应 tool_result 的 tool_use
-            missing_ids = [
-                tid for tid in tool_use_ids if tid not in all_result_ids
-            ]
-            if not missing_ids:
-                continue
-            # 在 assistant 消息后面紧接插入一个 user 消息补 tool_result
-            repair_blocks = [
+        def _is_type(block, block_type: str) -> bool:
+            return str(_value(block, "type", "") or "") == block_type
+
+        def _merge_content(existing, repair_blocks: list[dict]) -> list:
+            if isinstance(existing, list):
+                return repair_blocks + list(existing)
+            if isinstance(existing, str) and existing:
+                return repair_blocks + [{"type": "text", "text": existing}]
+            return repair_blocks
+
+        def _repair_blocks(missing_ids: list[str]) -> list[dict]:
+            return [
                 {
                     "type": "tool_result",
-                    "tool_use_id": tid,
+                    "tool_use_id": tool_use_id,
                     "content": (
                         "Error: the previous tool call was interrupted "
                         "before a result was produced."
                     ),
                 }
-                for tid in missing_ids
+                for tool_use_id in missing_ids
             ]
-            repaired.append({"role": "user", "content": repair_blocks})
 
-        return repaired
+        repaired: list = []
+        changed = False
+        index = 0
+        while index < len(messages):
+            msg = messages[index]
+            repaired.append(msg)
+            if msg.get("role") != "assistant":
+                index += 1
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                index += 1
+                continue
+            tool_use_ids = [
+                str(_value(block, "id", "") or "")
+                for block in content
+                if _is_type(block, "tool_use") and _value(block, "id")
+            ]
+            if not tool_use_ids:
+                index += 1
+                continue
+
+            next_message = (
+                messages[index + 1]
+                if index + 1 < len(messages)
+                else None
+            )
+            existing_result_ids: set[str] = set()
+            if (
+                next_message is not None
+                and next_message.get("role") == "user"
+                and isinstance(next_message.get("content"), list)
+            ):
+                existing_result_ids = {
+                    str(_value(block, "tool_use_id", "") or "")
+                    for block in next_message["content"]
+                    if _is_type(block, "tool_result")
+                    and _value(block, "tool_use_id")
+                }
+            missing_ids = [
+                tool_use_id
+                for tool_use_id in tool_use_ids
+                if tool_use_id not in existing_result_ids
+            ]
+            if not missing_ids:
+                index += 1
+                continue
+
+            repair_blocks = _repair_blocks(missing_ids)
+            changed = True
+            if next_message is not None and next_message.get("role") == "user":
+                merged = dict(next_message)
+                merged["content"] = _merge_content(
+                    next_message.get("content"),
+                    repair_blocks,
+                )
+                repaired.append(merged)
+                index += 2
+            else:
+                repaired.append({"role": "user", "content": repair_blocks})
+                index += 1
+
+        return repaired if changed else messages
 
     def _call_api(self, messages: list):
         # 修复可能因中断导致的 tool_use/tool_result 不配对
-        messages = self._repair_message_sequence(messages)
+        repaired = self._repair_message_sequence(messages)
+        if repaired is not messages:
+            self.messages = repaired
+            messages = repaired
         # 动态合并 MCP 工具：每次调用 API 前把已连接的 MCP 服务器工具合并进来
         registry = self._runtime_tool_registry()
         tools = registry.filtered_schemas(self.tool_context)
