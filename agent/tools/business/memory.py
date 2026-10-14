@@ -23,7 +23,7 @@ class MemoryToolsMixin:
         tools = [
             {
                 "name": "add_memory",
-                "description": "Save a piece of information to long-term memory for future sessions.",
+                "description": "Persist a durable, reusable fact for future sessions: a service endpoint, a host quirk, a deploy/rollback procedure, or a user preference. Call search_memory first to avoid duplicates, and prefer update_memory over adding a near-duplicate. Do NOT store ephemeral run output, one-off observations, or secrets/credentials.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -58,7 +58,7 @@ class MemoryToolsMixin:
             },
             {
                 "name": "search_memory",
-                "description": "Search long-term memory for relevant past information.",
+                "description": "Search long-term memory before re-investigating something you may have learned before (endpoints, past incidents, procedures, user preferences).",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -79,7 +79,7 @@ class MemoryToolsMixin:
             },
             {
                 "name": "update_memory",
-                "description": "Update a long-term memory by id.",
+                "description": "Update an existing memory by id when its content changed or needs correction - preferred over adding a duplicate.",
                 "input_schema": {
                     "type": "object",
                     "properties": {

@@ -53,6 +53,24 @@ class ContextManagerMixin:
             "Skills catalog:\n"
             + list_skills()
             + "\nUse load_skill(name) when a skill is relevant.",
+            "Tool usage policy:\n"
+            "- Plan multi-step work (3+ steps, or work spanning several turns) "
+            "with create_task before starting; claim_task when you begin an item; "
+            "complete_task with a concrete result when done. Keep task lists small "
+            "and relevant - skip them for a single quick action.\n"
+            "- Persist durable, reusable facts (service endpoints, host quirks, "
+            "deploy/rollback procedures, user preferences) with add_memory. "
+            "Call search_memory before re-investigating something you may already "
+            "know, and prefer update_memory over adding duplicates. Do NOT store "
+            "ephemeral run output or secrets.\n"
+            "- For recurring work (health checks, log sweeps, cert renewals) use "
+            "schedule_cron rather than ad-hoc loops.\n"
+            "- Delegate an independent, long-running investigation to spawn_subagent "
+            "when its output would otherwise flood the main context; you receive "
+            "only its summary. Keep the subagent's scope self-contained.\n"
+            "- Prefer the dedicated inspection tools (cpu_usage, memory_usage, "
+            "disk_io, process_top, ping_host) over raw bash when checking system "
+            "health, so results stay structured.",
         ]
         target = getattr(self, "target", None)
         if target is not None:

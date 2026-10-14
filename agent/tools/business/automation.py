@@ -12,7 +12,7 @@ class AutomationToolsMixin:
         tools = [
             {
                 "name": "schedule_cron",
-                "description": "Schedule a recurring prompt using cron syntax (5 fields: min hour dom month dow). Cron jobs will auto-execute in background at the scheduled time (no need to wait for user message).",
+                "description": "Schedule a recurring, unattended job using cron syntax (5 fields: min hour dom month dow). Use this for periodic work such as health checks, log sweeps, and cert renewals instead of ad-hoc loops. Cron jobs auto-execute in the background.",
                 "input_schema": {
                     "type": "object",
                     "properties": {

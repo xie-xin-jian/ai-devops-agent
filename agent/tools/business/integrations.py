@@ -10,7 +10,7 @@ class IntegrationToolsMixin:
     def _add_subagent_tool(self):
         schema = {
             "name": "spawn_subagent",
-            "description": "Spawn a subagent to work on a side task. The subagent has its own isolated context and returns a summary when done.",
+            "description": "Delegate an independent, long-running investigation to a subagent to keep the main context focused. The subagent has its own isolated context and returns only a summary when done. Use when the work is self-contained and its raw output would otherwise flood the main context; avoid for trivial one-step lookups.",
             "input_schema": {
                 "type": "object",
                 "properties": {

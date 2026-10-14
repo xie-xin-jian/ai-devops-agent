@@ -16,7 +16,7 @@ class TaskToolsMixin:
         tools = [
             {
                 "name": "create_task",
-                "description": "Create a new task with optional dependencies.",
+                "description": "Create a task to plan multi-step work (3+ steps, or work spanning several turns). Use BEFORE executing so progress and intent survive across turns. Keep the list small; use blockedBy to express dependencies on other task ids. Skip this for a single quick action.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -51,7 +51,7 @@ class TaskToolsMixin:
             },
             {
                 "name": "claim_task",
-                "description": "Claim a pending task for execution.",
+                "description": "Claim a pending task for execution (mark it in-progress) right before you start working on it. Only claim tasks that are not blocked.",
                 "input_schema": {
                     "type": "object",
                     "properties": {"task_id": {"type": "string"}},
@@ -60,7 +60,7 @@ class TaskToolsMixin:
             },
             {
                 "name": "complete_task",
-                "description": "Mark an in-progress task as completed.",
+                "description": "Mark an in-progress task as completed. Pass a concise result summarizing the outcome so later turns know what was done.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
