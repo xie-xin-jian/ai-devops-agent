@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import agent.platform.config as config
+from agent.core.context_compact import head_tail_truncate
 from agent.targets.service import is_sensitive_path
 from agent.targets.store import TargetStore
 
@@ -120,7 +121,7 @@ def _text_diff(path: Path, before: str, after: str) -> str:
         lineterm="",
     )
     text = "\n".join(diff)
-    return text[:10000] if text else "(no textual changes)"
+    return head_tail_truncate(text, 5000) if text else "(no textual changes)"
 
 
 def _http_check(url: str) -> dict:
@@ -186,7 +187,7 @@ def _run_project_command(target, command: str, timeout_seconds: int = 120) -> st
     output = (result.stdout + result.stderr).strip()
     if not output:
         output = "(no output)"
-    return f"exit_code={result.returncode}\n{output}"[:50000]
+    return head_tail_truncate(f"exit_code={result.returncode}\n{output}", 8000)
 
 
 def _restart_command_preview(target) -> str:

@@ -187,3 +187,87 @@ def test_agent_retries_once_after_context_recovery(monkeypatch):
         event.get("message") == "Prompt 过长，执行上下文恢复压缩..."
         for event in events
     )
+
+
+def test_head_tail_truncate_keeps_both_ends():
+    text = "START" + "m" * 5000 + "END"
+    result = context_compact.head_tail_truncate(text, 1000)
+
+    assert len(result) < 1000 + 60
+    assert result.startswith("START")
+    assert result.endswith("END")
+    assert "chars omitted" in result
+
+
+def test_head_tail_truncate_passthrough_when_short():
+    assert context_compact.head_tail_truncate("short output", 1000) == "short output"
+
+
+def test_history_tool_content_keeps_small_output():
+    assert context_compact.history_tool_content("t1", "ok") == "ok"
+
+
+def test_history_tool_content_persists_large_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(context_compact, "TOOL_RESULTS_DIR", tmp_path)
+    output = "LINE\n" * 4000
+
+    result = context_compact.history_tool_content("toolu_big", output)
+
+    assert "[Large tool output persisted to " in result
+    assert str(tmp_path) in result
+    assert len(result) < context_compact.HISTORY_TOOL_LIMIT
+    assert list(tmp_path.glob("toolu_big_*.txt"))
+
+
+def test_trim_by_size_keeps_head_and_recent_tail():
+    messages = [{"role": "user", "content": "原始需求"}]
+    messages += [
+        {"role": "user", "content": f"m{i}" + "x" * 2000}
+        for i in range(20)
+    ]
+
+    trimmed = context_compact.trim_by_size(messages, 5000)
+
+    assert trimmed[0]["content"] == "原始需求"
+    assert trimmed[-1]["content"].startswith("m19")
+    assert any("earlier messages dropped" in str(m.get("content")) for m in trimmed)
+    assert (
+        context_compact.estimate_size(trimmed)
+        <= 5000 + len(str(trimmed[-1]))
+    )
+
+
+def test_trim_by_size_noop_under_budget():
+    messages = [{"role": "user", "content": "hi"}]
+    assert context_compact.trim_by_size(messages, 5000) is messages
+
+
+def test_compact_if_needed_bounds_spiky_history(tmp_path, monkeypatch):
+    """复现服务器上 "每轮 ctx 冲到 24 万字节" 的场景，确认压缩后回到预算内。"""
+    monkeypatch.setattr(context_compact, "TOOL_RESULTS_DIR", tmp_path)
+    agent = object.__new__(comprehensive.ComprehensiveAgent)
+    messages = [{"role": "user", "content": "deploy the project"}]
+    for index in range(3):
+        messages.append({
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": f"toolu_{index}",
+                "name": "bash",
+                "input": {"command": "make deploy"},
+            }],
+        })
+        messages.append({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": f"toolu_{index}",
+                "content": "L" * 60000,
+            }],
+        })
+
+    assert context_compact.estimate_size(messages) > 120000
+
+    compacted = agent._compact_if_needed(messages)
+
+    assert context_compact.estimate_size(compacted) <= 120000

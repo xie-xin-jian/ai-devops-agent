@@ -2,7 +2,10 @@
 import re
 from pathlib import Path
 
+from agent.core.context_compact import head_tail_truncate
 from agent.platform.config import WORKDIR
+
+BASH_OUTPUT_LIMIT = 8000
 
 
 # (正则, 建议工具, 理由)。只收「语义唯一」的巡检命令；复合命令(&&/;)不拦截。
@@ -82,11 +85,12 @@ def run_host_bash(
         output = (result.stdout + result.stderr).strip()
         if not output:
             output = "(no output)"
-        return (
+        return head_tail_truncate(
             f"exit_code={result.returncode}\n"
             f"cwd={working_dir}\n"
-            f"{output}"
-        )[:50000]
+            f"{output}",
+            BASH_OUTPUT_LIMIT,
+        )
     except subprocess.TimeoutExpired:
         return f"Error: Timeout ({timeout}s)"
     except Exception as exc:

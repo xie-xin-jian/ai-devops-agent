@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from agent.platform.config import CONTEXT_LIMIT, WORKDIR
+from agent.platform.config import CONTEXT_BYTES_BUDGET, CONTEXT_LIMIT, WORKDIR
 from agent.core.context_compact import (
     estimate_size,
     micro_compact,
     snip_compact,
     tool_result_budget,
+    trim_by_size,
 )
 from agent.mcp.client import assemble_tool_pool, list_connected_mcp
 from agent.memory.policy import readable_scopes
@@ -116,4 +117,4 @@ class ContextManagerMixin:
         messages = micro_compact(messages)
         if estimate_size(messages) > CONTEXT_LIMIT:
             messages = snip_compact(messages)
-        return messages
+        return trim_by_size(messages, CONTEXT_BYTES_BUDGET)

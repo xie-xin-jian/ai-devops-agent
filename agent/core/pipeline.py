@@ -3,7 +3,11 @@
 import time
 import uuid
 
-from agent.core.context_compact import compact_history, estimate_size
+from agent.core.context_compact import (
+    compact_history,
+    estimate_size,
+    history_tool_content,
+)
 from agent.core.error_recovery import (
     escalate_tokens,
     is_output_limit_error,
@@ -478,7 +482,7 @@ class AgentPipelineMixin:
                     {
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": str(output),
+                        "content": history_tool_content(block.id, output),
                     }
                 )
 

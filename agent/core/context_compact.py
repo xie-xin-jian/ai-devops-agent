@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agent.platform.config import (
+    HISTORY_TOOL_LIMIT,
     KEEP_RECENT_TOOL_RESULTS,
     PERSIST_THRESHOLD,
     TOOL_RESULTS_DIR,
@@ -76,7 +77,38 @@ def persist_large_output(tool_use_id: str, output: str) -> str:
     )
 
 
-def tool_result_budget(messages: list, max_bytes: int = 200000) -> list:
+def head_tail_truncate(text: str, limit: int) -> str:
+    """保留首尾各一半，中间省略。开头含命令回显、结尾含报错，最有用。"""
+    text = str(text)
+    if len(text) <= limit:
+        return text
+    head = limit // 2
+    tail = limit - head
+    omitted = len(text) - limit
+    return (
+        text[:head]
+        + f"\n... ({omitted} chars omitted) ...\n"
+        + text[-tail:]
+    )
+
+
+def history_tool_content(
+    tool_use_id: str,
+    output: str,
+    limit: int = HISTORY_TOOL_LIMIT,
+) -> str:
+    """限制单条工具输出进入消息历史的体积。
+
+    超阈值的输出落盘保存（历史里只留预览和文件路径），因此 Agent 需要
+    细节时仍可用 target_read_file 取回，而不是每轮都重发整个 payload。
+    """
+    text = str(output)
+    if len(text) >= PERSIST_THRESHOLD:
+        text = persist_large_output(tool_use_id, text)
+    return head_tail_truncate(text, limit)
+
+
+def tool_result_budget(messages: list, max_bytes: int = 60000) -> list:
     messages = [
         json.loads(json.dumps(m, default=str)) if not isinstance(m, dict) else m
         for m in messages
@@ -169,6 +201,41 @@ def snip_compact(messages: list, max_messages: int = 50) -> list:
     }
 
     return head + [snip_message] + tail
+
+
+def _message_size(message) -> int:
+    return len(json.dumps(message, default=str))
+
+
+def trim_by_size(messages: list, max_bytes: int, keep_head: int = 1) -> list:
+    """按字节预算裁剪历史：保留首条用户消息和最近的尾部。
+
+    与只按消息条数裁剪的 snip_compact 不同，这里直接控制字节量，避免
+    "消息数没超但每条都很大" 导致每轮 API 调用都在重发几十万字节。
+    """
+    sizes = [_message_size(message) for message in messages]
+    total = sum(sizes)
+    if total <= max_bytes or len(messages) <= keep_head + 1:
+        return messages
+
+    head_size = sum(sizes[:keep_head])
+    start = keep_head
+    suffix_size = total - head_size
+    while start < len(messages) - 1 and head_size + suffix_size > max_bytes:
+        suffix_size -= sizes[start]
+        start += 1
+
+    if start <= keep_head:
+        return messages
+
+    dropped = start - keep_head
+    marker = {
+        "role": "user",
+        "content": (
+            f"[{dropped} earlier messages dropped to bound context size]"
+        ),
+    }
+    return messages[:keep_head] + [marker] + messages[start:]
 
 
 def micro_compact(messages: list) -> list:
