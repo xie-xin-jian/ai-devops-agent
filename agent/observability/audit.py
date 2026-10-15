@@ -130,6 +130,37 @@ class AuditStore:
                 handle.flush()
                 os.fsync(handle.fileno())
 
+    def _iter_lines_reverse(self):
+        """Yield raw event lines newest-first with bounded reads.
+
+        Audit files grow unboundedly; parsing every line on each listing
+        made the audit page slow. Reading tail chunks backwards lets us
+        stop as soon as ``limit`` matching events are collected.
+        """
+        if not self.path.exists():
+            return
+        with self._lock:
+            try:
+                with open(self.path, "rb") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    position = handle.tell()
+                    buffer = b""
+                    chunk = 65536
+                    while position > 0:
+                        step = min(chunk, position)
+                        position -= step
+                        handle.seek(position)
+                        buffer = handle.read(step) + buffer
+                        lines = buffer.split(b"\n")
+                        buffer = lines.pop(0)
+                        for raw in reversed(lines):
+                            if raw.strip():
+                                yield raw
+                    if buffer.strip():
+                        yield buffer
+            except OSError:
+                return
+
     def list_events(
         self,
         *,
@@ -139,33 +170,34 @@ class AuditStore:
         event_type: str | None = None,
         limit: int = 200,
     ) -> list[AuditEvent]:
-        if not self.path.exists():
-            return []
+        limit = max(1, min(int(limit), 1000))
         events = []
-        with self._lock:
-            with open(self.path, "r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        event = AuditEvent.from_dict(json.loads(line))
-                    except (json.JSONDecodeError, TypeError, ValueError):
-                        continue
-                    if session_id and event.session_id != session_id:
-                        continue
-                    if run_id and event.run_id != run_id:
-                        continue
-                    if action_id and event.action_id != action_id:
-                        continue
-                    if event_type and event.event_type != event_type:
-                        continue
-                    events.append(event)
+        for raw_line in self._iter_lines_reverse():
+            try:
+                event = AuditEvent.from_dict(json.loads(raw_line))
+            except (
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+                UnicodeDecodeError,
+            ):
+                continue
+            if session_id and event.session_id != session_id:
+                continue
+            if run_id and event.run_id != run_id:
+                continue
+            if action_id and event.action_id != action_id:
+                continue
+            if event_type and event.event_type != event_type:
+                continue
+            events.append(event)
+            if len(events) >= limit:
+                break
         events.sort(
             key=lambda item: (item.occurred_at, item.id),
             reverse=True,
         )
-        return events[:max(1, min(int(limit), 1000))]
+        return events
 
     def get_run_trace(self, run_id: str) -> list[AuditEvent]:
         events = self.list_events(run_id=run_id, limit=1000)

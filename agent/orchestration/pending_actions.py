@@ -208,25 +208,43 @@ class PendingActionStore:
         *,
         session_id: str | None = None,
         status: str | None = None,
+        limit: int = 0,
     ) -> list[PendingAction]:
+        """List actions newest-first.
+
+        Filtering and sorting happen on the raw dicts so that only the
+        returned slice is deserialized into dataclasses (the file holds
+        full payloads and grows with history).
+        """
         with self._lock:
-            records = self._load_unlocked().values()
-        actions = [PendingAction.from_dict(item) for item in records]
+            records = list(self._load_unlocked().values())
         if session_id:
-            actions = [
-                item for item in actions
-                if item.session_id == session_id
+            records = [
+                item for item in records
+                if isinstance(item, dict)
+                and item.get("session_id") == session_id
             ]
         if status:
-            actions = [
-                item for item in actions
-                if item.status == status
+            records = [
+                item for item in records
+                if isinstance(item, dict)
+                and item.get("status") == status
             ]
-        return sorted(
-            actions,
-            key=lambda item: (item.created_at, item.id),
+        records.sort(
+            key=lambda item: (
+                float(item.get("created_at") or 0)
+                if isinstance(item, dict) else 0.0,
+                str(item.get("id") or "") if isinstance(item, dict) else "",
+            ),
             reverse=True,
         )
+        if limit and limit > 0:
+            records = records[: int(limit)]
+        return [
+            PendingAction.from_dict(item)
+            for item in records
+            if isinstance(item, dict)
+        ]
 
     def confirm(
         self,

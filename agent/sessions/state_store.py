@@ -169,6 +169,7 @@ class RecoveryStore:
         messages: list,
         status: str = "active",
         target_id: str | None = None,
+        title: str | None = None,
     ) -> dict:
         if not str(session_id or "").strip():
             raise ValueError("session_id is required")
@@ -186,6 +187,11 @@ class RecoveryStore:
                     if target_id is not None
                     else str(existing.get("target_id") or "")
                 ),
+                "title": (
+                    str(title).strip()[:64]
+                    if title is not None and str(title).strip()
+                    else str(existing.get("title") or "")
+                ),
                 "created_at": float(existing.get("created_at") or now),
                 "updated_at": now,
                 "messages": serialize_messages(messages),
@@ -195,6 +201,21 @@ class RecoveryStore:
             **record,
             "messages": deserialize_messages(record["messages"]),
         }
+
+    def rename_session(self, session_id: str, title: str) -> dict | None:
+        """Set a custom title without touching messages or updated_at."""
+        clean = str(title or "").strip()[:64]
+        if not clean:
+            raise ValueError("title is required")
+        path = self._session_path(session_id)
+        lock = get_path_lock(path)
+        with lock:
+            record = self._read_json(path)
+            if record is None:
+                return None
+            record["title"] = clean
+            atomic_write_json(path, record)
+        return record
 
     def reset_session(self, session_id: str) -> None:
         path = self._session_path(session_id)
@@ -207,6 +228,7 @@ class RecoveryStore:
         self,
         *,
         owner_id: str | None = None,
+        light: bool = False,
     ) -> list[dict]:
         if not self.sessions_dir.exists():
             return []
@@ -223,10 +245,13 @@ class RecoveryStore:
                 and record.get("owner_id") != owner_id
             ):
                 continue
-            records.append({
-                **record,
-                "messages": deserialize_messages(record.get("messages")),
-            })
+            if light:
+                records.append(record)
+            else:
+                records.append({
+                    **record,
+                    "messages": deserialize_messages(record.get("messages")),
+                })
         records.sort(
             key=lambda item: (
                 float(item.get("updated_at") or 0),
@@ -324,6 +349,7 @@ class RecoveryStore:
         owner_id: str | None = None,
         session_id: str | None = None,
         status: str | None = None,
+        statuses: set[str] | None = None,
         limit: int = 100,
     ) -> list[dict]:
         if not self.runs_dir.exists():
@@ -345,10 +371,14 @@ class RecoveryStore:
                 continue
             if status and record.get("status") != status:
                 continue
-            records.append({
+            if statuses and record.get("status") not in statuses:
+                continue
+            entry = {
                 **record,
-                "messages": deserialize_messages(record.get("messages")),
-            })
+                "message_count": len(record.get("messages") or []),
+            }
+            entry.pop("messages", None)
+            records.append(entry)
         records.sort(
             key=lambda item: (
                 float(item.get("updated_at") or 0),

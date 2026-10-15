@@ -71,11 +71,13 @@ async def _continue_session_after_approval(
 async def list_pending_actions(
     session_id: str | None = None,
     status: str | None = None,
+    limit: int = 200,
     principal: Principal = Depends(require_permissions(AGENT_CHAT)),
 ):
     actions = PendingActionStore().list(
         session_id=session_id,
         status=status,
+        limit=max(0, min(int(limit), 1000)),
     )
     if not (
         principal.has(SESSION_MANAGE)

@@ -9,6 +9,7 @@ import {
   Eraser,
   Loader2,
   MessageSquare,
+  Pencil,
   Plus,
   Send,
   ShieldAlert,
@@ -41,6 +42,7 @@ export default function Chat() {
     switchChat,
     deleteChat,
     fetchChatSessions,
+    renameChat,
     pendingActions,
     pendingActionBusyId,
     confirmPendingAction,
@@ -48,6 +50,7 @@ export default function Chat() {
   } = useAppStore()
   const [input, setInput] = useState('')
   const [showTrace, setShowTrace] = useState(true)
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -107,11 +110,43 @@ export default function Chat() {
                     className="min-w-0 flex-1 px-2.5 py-2 text-left"
                   >
                     <div className="truncate text-xs font-medium">
-                      {session.title}
+                      {renaming?.id === session.id ? (
+                        <input
+                          autoFocus
+                          value={renaming.value}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) =>
+                            setRenaming({ id: session.id, value: event.target.value })
+                          }
+                          onBlur={() => setRenaming(null)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              renameChat(session.id, renaming.value).finally(() =>
+                                setRenaming(null)
+                              )
+                            } else if (event.key === 'Escape') {
+                              setRenaming(null)
+                            }
+                          }}
+                          className="w-full rounded border border-accent-primary/40 bg-bg-primary px-1 py-0.5 text-xs outline-none"
+                        />
+                      ) : (
+                        session.title
+                      )}
                     </div>
                     <div className="mt-0.5 text-[10px] text-text-tertiary">
                       {formatRelative(session.updatedAt)}
                     </div>
+                  </button>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setRenaming({ id: session.id, value: session.title })
+                    }}
+                    className="hidden h-7 w-7 items-center justify-center rounded-md text-text-tertiary hover:bg-bg-active hover:text-text-primary group-hover:flex"
+                    title="重命名会话"
+                  >
+                    <Pencil size={13} />
                   </button>
                   <button
                     onClick={(event) => {

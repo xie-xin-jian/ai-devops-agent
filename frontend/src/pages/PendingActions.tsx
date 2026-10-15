@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   Check,
+  History,
   RefreshCw,
   ShieldAlert,
   X,
@@ -8,32 +9,59 @@ import {
 import { actionApi } from '../api'
 import Badge from '../components/Badge'
 import Button from '../components/Button'
+import SessionSelect, {
+  sessionTitle,
+  useSessions,
+} from '../components/SessionSelect'
 import { useAppStore } from '../store/useAppStore'
 
+type Tab = 'pending' | 'history'
+
 export default function PendingActions() {
+  const sessions = useSessions()
+  const [tab, setTab] = useState<Tab>('pending')
   const [actions, setActions] = useState<any[]>([])
+  const [sessionId, setSessionId] = useState('')
   const [loading, setLoading] = useState(false)
   const [busyId, setBusyId] = useState('')
   const [error, setError] = useState('')
 
-  const load = async () => {
+  const load = useCallback(async (which: Tab, sid: string) => {
     setLoading(true)
     setError('')
     try {
-      const res = await actionApi.pending()
-      setActions(res.actions || [])
+      if (which === 'pending') {
+        // 待审批只拉 pending 状态，服务端过滤 + 限量，轮询开销可控。
+        const res = await actionApi.pending(sid || undefined, 'pending', 50)
+        setActions(res.actions || [])
+      } else {
+        // 历史按需加载：切到该 Tab 或手动刷新时才请求。
+        const res = await actionApi.pending(sid || undefined, undefined, 50)
+        setActions(
+          (res.actions || []).filter((item: any) => item.status !== 'pending')
+        )
+      }
     } catch (e: any) {
-      setError(e.message || '加载待审批动作失败')
+      setError(e.message || '加载审批记录失败')
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
-    load()
-    const timer = setInterval(load, 10000)
+    load(tab, sessionId)
+    // 仅待审批 Tab 需要 10s 轮询；历史 Tab 按需加载。
+    const timer = setInterval(() => {
+      if (tab === 'pending') {
+        load('pending', sessionId)
+      }
+    }, 10000)
     return () => clearInterval(timer)
-  }, [])
+  }, [load, tab, sessionId])
+
+  const switchTab = (next: Tab) => {
+    setTab(next)
+  }
 
   const decide = async (action: any, decision: 'confirm' | 'cancel') => {
     const id = action.id
@@ -54,7 +82,7 @@ export default function PendingActions() {
       } else {
         await actionApi.cancel(id, 'api-user', 'Rejected from UI')
       }
-      await load()
+      await load(tab, sessionId)
     } catch (e: any) {
       setError(e.message || '审批操作失败')
     } finally {
@@ -62,21 +90,38 @@ export default function PendingActions() {
     }
   }
 
-  const pendingCount = actions.filter((item) => item.status === 'pending').length
-
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="mx-auto max-w-6xl">
-        <div className="mb-5 flex items-center justify-between">
-          <div>
-            <p className="text-sm text-text-secondary">
-              共 {actions.length} 条记录 · {pendingCount} 条待审批
-            </p>
+        <div className="mb-5 flex flex-wrap items-end gap-3">
+          <SessionSelect
+            value={sessionId}
+            onChange={(value) => {
+              setSessionId(value)
+              load(tab, value)
+            }}
+            sessions={sessions}
+          />
+          <div className="flex rounded-lg border border-border-primary p-0.5">
+            <TabButton
+              active={tab === 'pending'}
+              onClick={() => switchTab('pending')}
+              icon={<ShieldAlert size={14} />}
+              text="待审批"
+            />
+            <TabButton
+              active={tab === 'history'}
+              onClick={() => switchTab('history')}
+              icon={<History size={14} />}
+              text="历史"
+            />
           </div>
-          <Button variant="secondary" onClick={load} disabled={loading}>
+          <Button variant="ghost" onClick={() => load(tab, sessionId)} disabled={loading}>
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-            刷新
           </Button>
+          <div className="ml-auto text-xs text-text-tertiary">
+            {actions.length} 条记录
+          </div>
         </div>
 
         {error && (
@@ -88,7 +133,9 @@ export default function PendingActions() {
         {actions.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border-primary py-20 text-center">
             <ShieldAlert size={36} className="mx-auto mb-3 text-text-tertiary" />
-            <p className="text-text-secondary">当前没有待审批动作</p>
+            <p className="text-text-secondary">
+              {tab === 'pending' ? '当前没有待审批动作' : '暂无历史记录'}
+            </p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -116,9 +163,9 @@ export default function PendingActions() {
                     </p>
 
                     <div className="mt-3 grid gap-3 text-xs md:grid-cols-3">
-                      <Detail label="Run" value={action.run_id || action.session_id} />
+                      <Detail label="会话" value={sessionTitle(sessions, action.session_id)} />
+                      <Detail label="Run" value={action.run_id || '-'} />
                       <Detail label="Owner" value={action.owner_id || '-'} />
-                      <Detail label="Session" value={action.session_id || '-'} />
                     </div>
 
                     {!!action.steps?.length && (
@@ -170,40 +217,66 @@ export default function PendingActions() {
                         批准并执行
                       </Button>
                     </div>
-                    )}
-
-                    {action.result_payload?.summary && (
-                      <div className="mt-3 rounded-lg bg-bg-tertiary px-3 py-2">
-                        <div className="mb-1 text-xs font-medium text-text-secondary">
-                          执行结果
-                        </div>
-                        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words text-xs text-text-secondary">
-                          {action.result_payload.summary}
-                        </pre>
-                      </div>
-                    )}
-                    {action.result_payload?.error && (
-                      <div className="mt-3 rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-2 text-xs text-status-error">
-                        {action.result_payload.error}
-                      </div>
-                    )}
-                    {action.result_payload?.assistant_response && (
-                      <div className="mt-3 rounded-lg border border-accent-primary/20 bg-accent-soft px-3 py-2">
-                        <div className="mb-1 text-xs font-medium text-accent-primary">
-                          Agent 继续处理结果
-                        </div>
-                        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words text-xs text-text-secondary">
-                          {action.result_payload.assistant_response}
-                        </pre>
-                      </div>
-                    )}
+                  )}
                 </div>
+
+                {action.result_payload?.summary && (
+                  <div className="mt-3 rounded-lg bg-bg-tertiary px-3 py-2">
+                    <div className="mb-1 text-xs font-medium text-text-secondary">
+                      执行结果
+                    </div>
+                    <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words text-xs text-text-secondary">
+                      {action.result_payload.summary}
+                    </pre>
+                  </div>
+                )}
+                {action.result_payload?.error && (
+                  <div className="mt-3 rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-2 text-xs text-status-error">
+                    {action.result_payload.error}
+                  </div>
+                )}
+                {action.result_payload?.assistant_response && (
+                  <div className="mt-3 rounded-lg border border-accent-primary/20 bg-accent-soft px-3 py-2">
+                    <div className="mb-1 text-xs font-medium text-accent-primary">
+                      Agent 继续处理结果
+                    </div>
+                    <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words text-xs text-text-secondary">
+                      {action.result_payload.assistant_response}
+                    </pre>
+                  </div>
+                )}
               </div>
             ))}
           </div>
         )}
       </div>
     </div>
+  )
+}
+
+function TabButton({
+  active,
+  onClick,
+  icon,
+  text,
+}: {
+  active: boolean
+  onClick: () => void
+  icon: React.ReactNode
+  text: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+        active
+          ? 'bg-accent-soft text-accent-primary'
+          : 'text-text-tertiary hover:text-text-primary'
+      }`}
+    >
+      {icon}
+      {text}
+    </button>
   )
 }
 

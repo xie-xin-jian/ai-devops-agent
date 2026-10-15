@@ -16,6 +16,10 @@ class SessionRequest(BaseModel):
     session_id: str | None = None
 
 
+class SessionRenameRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=64)
+
+
 class CancelRequest(BaseModel):
     session_id: str = Field(min_length=1)
 

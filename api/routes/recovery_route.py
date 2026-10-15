@@ -12,6 +12,7 @@ from agent.sessions.state_store import (
     RUN_STATUS_CANCELED,
     RUN_STATUS_FAILED,
     RUN_STATUS_INTERRUPTED,
+    RUN_STATUS_RUNNING,
     RecoveryStore,
 )
 from api.auth import require_permissions
@@ -47,7 +48,10 @@ def _summary(run: dict) -> dict:
         "active_tool": run.get("active_tool", ""),
         "interruption_reason": run.get("interruption_reason", ""),
         "resume_count": int(run.get("resume_count") or 0),
-        "message_count": len(run.get("messages") or []),
+        "message_count": int(
+            run.get("message_count")
+            or len(run.get("messages") or [])
+        ),
         "created_at": float(run.get("created_at") or 0),
         "updated_at": float(run.get("updated_at") or 0),
         "finished_at": run.get("finished_at"),
@@ -58,14 +62,26 @@ def _summary(run: dict) -> dict:
 async def list_recovery_runs(
     session_id: str | None = None,
     status: str | None = None,
+    include_completed: bool = False,
     limit: int = 100,
     principal: Principal = Depends(require_permissions(AGENT_CHAT)),
 ):
     owner_id = None if principal.has(SESSION_MANAGE) else principal.id
+    if status:
+        statuses = {status}
+    elif include_completed:
+        statuses = None
+    else:
+        statuses = {
+            RUN_STATUS_RUNNING,
+            RUN_STATUS_INTERRUPTED,
+            RUN_STATUS_FAILED,
+            RUN_STATUS_CANCELED,
+        }
     runs = RecoveryStore().list_runs(
         owner_id=owner_id,
         session_id=session_id,
-        status=status,
+        statuses=statuses,
         limit=limit,
     )
     return {"runs": [_summary(run) for run in runs]}

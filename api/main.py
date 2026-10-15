@@ -26,7 +26,12 @@ from .auth import (
     get_request_principal,
     require_permissions,
 )
-from .schemas import CancelRequest, ChatRequest, SessionRequest
+from .schemas import (
+    CancelRequest,
+    ChatRequest,
+    SessionRenameRequest,
+    SessionRequest,
+)
 from agent.platform.identity import AGENT_CHAT, Principal, system_admin_principal
 from .routes.task import router as task_router
 from .routes.cron_route import router as cron_router
@@ -314,6 +319,26 @@ async def list_chat_sessions(
     return {
         "sessions": _session_manager.list_sessions(principal)
     }
+
+
+@app.post("/api/chat/sessions/{session_id}/rename")
+async def rename_chat_session(
+    session_id: str,
+    payload: SessionRenameRequest,
+    principal: Principal = Depends(get_request_principal),
+):
+    try:
+        return _session_manager.rename_session(
+            session_id,
+            payload.title,
+            principal,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    except SessionAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/reset/")

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -8,39 +8,52 @@ import {
 import { recoveryApi } from '../api'
 import Badge from '../components/Badge'
 import Button from '../components/Button'
+import SessionSelect, {
+  sessionTitle,
+  useSessions,
+} from '../components/SessionSelect'
 
 export default function Recovery() {
+  const sessions = useSessions()
   const [runs, setRuns] = useState<any[]>([])
   const [selected, setSelected] = useState<any | null>(null)
+  const [sessionId, setSessionId] = useState('')
+  const [includeCompleted, setIncludeCompleted] = useState(false)
   const [loading, setLoading] = useState(false)
   const [resumeText, setResumeText] = useState('')
   const [error, setError] = useState('')
 
-  const load = async () => {
-    setLoading(true)
-    setError('')
-    try {
-      const result = await recoveryApi.list({ limit: 100 })
-      const activeRuns = (result.runs || []).filter((run: any) =>
-        ['running', 'interrupted', 'failed', 'canceled'].includes(run.status)
-      )
-      setRuns(activeRuns)
-      if (selected) {
-        const updated = activeRuns.find(
-          (run: any) => run.run_id === selected.run_id
+  const load = useCallback(
+    async (sid: string, withCompleted: boolean) => {
+      setLoading(true)
+      setError('')
+      try {
+        // 服务端默认只返回 running/interrupted/failed/canceled；
+        // 列表接口不再反序列化完整 messages，加载开销与存量无关。
+        const result = await recoveryApi.list({
+          sessionId: sid || undefined,
+          includeCompleted: withCompleted,
+          limit: 100,
+        })
+        const nextRuns = result.runs || []
+        setRuns(nextRuns)
+        setSelected((prev: any | null) =>
+          prev
+            ? nextRuns.find((run: any) => run.run_id === prev.run_id) || null
+            : null
         )
-        setSelected(updated || null)
+      } catch (e: any) {
+        setError(e.message || '加载恢复记录失败')
+      } finally {
+        setLoading(false)
       }
-    } catch (e: any) {
-      setError(e.message || '加载恢复记录失败')
-    } finally {
-      setLoading(false)
-    }
-  }
+    },
+    []
+  )
 
   useEffect(() => {
-    load()
-  }, [])
+    load('', false)
+  }, [load])
 
   const selectRun = async (run: any) => {
     setResumeText('')
@@ -70,7 +83,7 @@ export default function Recovery() {
           setResumeText(event.text || '已停止')
         }
       })
-      await load()
+      await load(sessionId, includeCompleted)
     } catch (e: any) {
       setError(e.message || '恢复失败')
     }
@@ -79,14 +92,37 @@ export default function Recovery() {
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="mx-auto max-w-7xl">
-        <div className="mb-5 flex items-center justify-between gap-4">
+        <div className="mb-5 flex flex-wrap items-end gap-3">
           <div>
             <h1 className="text-base font-semibold">崩溃恢复中心</h1>
             <p className="mt-1 text-sm text-text-secondary">
               查看进程中断原因，只从没有工具在途的安全点继续。
             </p>
           </div>
-          <Button variant="secondary" onClick={load} disabled={loading}>
+          <SessionSelect
+            value={sessionId}
+            onChange={(value) => {
+              setSessionId(value)
+              load(value, includeCompleted)
+            }}
+            sessions={sessions}
+          />
+          <button
+            onClick={() => {
+              const next = !includeCompleted
+              setIncludeCompleted(next)
+              load(sessionId, next)
+            }}
+            className={`flex h-9 items-center gap-1.5 rounded-lg border px-3 text-xs transition-colors ${
+              includeCompleted
+                ? 'border-accent-primary/40 bg-accent-soft text-accent-primary'
+                : 'border-border-primary text-text-tertiary hover:text-text-primary'
+            }`}
+          >
+            <CheckCircle2 size={13} />
+            含已完成
+          </button>
+          <Button variant="secondary" onClick={() => load(sessionId, includeCompleted)} disabled={loading}>
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             刷新
           </Button>
@@ -101,10 +137,11 @@ export default function Recovery() {
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
           <div className="overflow-hidden rounded-lg border border-border-primary">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[720px]">
+              <table className="w-full min-w-[760px]">
                 <thead>
                   <tr className="border-b border-border-primary bg-bg-tertiary/50">
                     <Th>Run</Th>
+                    <Th>会话</Th>
                     <Th>状态</Th>
                     <Th>阶段</Th>
                     <Th>安全点</Th>
@@ -126,6 +163,14 @@ export default function Recovery() {
                         </div>
                         <div className="mt-0.5 max-w-sm truncate text-[11px] text-text-tertiary">
                           {run.user_message || '-'}
+                        </div>
+                      </td>
+                      <td className="max-w-40 px-4 py-3">
+                        <div
+                          className="truncate text-xs text-text-secondary"
+                          title={run.session_id || ''}
+                        >
+                          {sessionTitle(sessions, run.session_id)}
                         </div>
                       </td>
                       <td className="px-4 py-3">
@@ -190,7 +235,10 @@ export default function Recovery() {
                 </div>
 
                 <dl className="space-y-3 text-xs">
-                  <Meta label="Session" value={selected.session_id} />
+                  <Meta
+                    label="会话"
+                    value={sessionTitle(sessions, selected.session_id)}
+                  />
                   <Meta label="初始请求" value={selected.user_message} />
                   <Meta label="中断原因" value={selected.interruption_reason || '-'} />
                   <Meta label="在途工具" value={selected.active_tool || '-'} />

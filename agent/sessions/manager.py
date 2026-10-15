@@ -9,9 +9,21 @@ from typing import Callable
 
 from agent.observability.audit import record_event
 from agent.core.comprehensive import ComprehensiveAgent
-from agent.sessions.messages import serialize_visible_messages
 from agent.platform.identity import Principal, SESSION_MANAGE, system_admin_principal
 from agent.sessions.state_store import RecoveryStore
+
+
+def _message_text(content) -> str:
+    """Extract readable text from a raw stored message content value."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+        return " ".join(parts)
+    return ""
 
 
 class SessionAccessError(PermissionError):
@@ -221,41 +233,64 @@ class SessionManager:
         self.state_store.reset_session(session_id)
 
     def list_sessions(self, principal: Principal) -> list[dict]:
+        """List sessions ordered by persisted activity.
+
+        Ordering uses the stored ``updated_at`` only: opening a session
+        must not reorder the sidebar; order changes when a run persists
+        messages, not when a session is merely opened.
+        """
         sessions = []
-        for record in self.state_store.list_sessions():
+        for record in self.state_store.list_sessions(light=True):
             sid = str(record.get("session_id") or "")
             owner_id = str(record.get("owner_id") or "")
             if not self._can_access_owner(owner_id, principal):
                 continue
-            visible = serialize_visible_messages(
-                record.get("messages", [])
-            )
-            first_user = next(
-                (
-                    item.get("content", "")
-                    for item in visible
-                    if item.get("role") == "user"
-                ),
-                "",
-            )
-            live_session = self._sessions.get(sid)
-            updated_at = float(record.get("updated_at") or 0)
-            if live_session is not None:
-                updated_at = max(
-                    updated_at,
-                    live_session["last_used"].timestamp(),
-                )
+            first_user = ""
+            message_count = 0
+            for item in record.get("messages") or []:
+                if not isinstance(item, dict):
+                    continue
+                message_count += 1
+                if not first_user and item.get("role") == "user":
+                    first_user = _message_text(item.get("content"))
+            title = str(record.get("title") or "").strip()
             sessions.append({
                 "id": sid,
-                "title": first_user[:32] or "新对话",
-                "updated_at": updated_at,
-                "message_count": len(visible),
+                "title": title or first_user[:32] or "新对话",
+                "updated_at": float(record.get("updated_at") or 0),
+                "message_count": message_count,
             })
         sessions.sort(
             key=lambda item: item["updated_at"],
             reverse=True,
         )
         return sessions
+
+    def rename_session(
+        self,
+        session_id: str,
+        title: str,
+        principal: Principal,
+    ) -> dict:
+        clean = str(title or "").strip()[:64]
+        if not clean:
+            raise ValueError("title is required")
+        stored = self.state_store.get_session(session_id)
+        if stored is None:
+            raise KeyError(session_id)
+        self._check_owner(stored.get("owner_id", ""), principal)
+        self.state_store.rename_session(session_id, clean)
+        record_event(
+            "session.renamed",
+            "Session renamed",
+            result="success",
+            severity="info",
+            actor=principal.id,
+            session_id=session_id,
+            correlation_id=session_id,
+            payload={"title": clean},
+        )
+        return {"session_id": session_id, "title": clean}
 
     def _check_access(
         self,

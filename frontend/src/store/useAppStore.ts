@@ -69,6 +69,7 @@ interface AppState {
   resetMessages: () => Promise<void>
   newChat: () => void
   switchChat: (sessionId: string) => Promise<void>
+  renameChat: (sessionId: string, title: string) => Promise<void>
   deleteChat: (sessionId: string) => Promise<void>
 
   // 流式状态（用于执行轨迹面板）
@@ -557,6 +558,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().sessionId === sessionId) {
       get().newChat()
     }
+  },
+
+  renameChat: async (sessionId, title) => {
+    const clean = title.replace(/\s+/g, ' ').trim().slice(0, 64)
+    if (!clean) return
+    try {
+      await chatApi.renameSession(sessionId, clean)
+    } catch (e: any) {
+      get().showToast('error', e.message || '重命名失败')
+      return
+    }
+    // 就地更新标题，不改变列表顺序
+    const next = get().chatSessions.map((item) =>
+      item.id === sessionId ? { ...item, title: clean } : item
+    )
+    set({ chatSessions: next })
+    persistChatSessions(next)
   },
 
   tasks: [],

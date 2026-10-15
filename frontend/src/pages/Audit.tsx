@@ -4,8 +4,13 @@ import { auditApi } from '../api'
 import Badge from '../components/Badge'
 import Button from '../components/Button'
 import { Input } from '../components/Input'
+import SessionSelect, {
+  sessionTitle,
+  useSessions,
+} from '../components/SessionSelect'
 
 export default function Audit() {
+  const sessions = useSessions()
   const [events, setEvents] = useState<any[]>([])
   const [sessionId, setSessionId] = useState('')
   const [eventType, setEventType] = useState('')
@@ -17,7 +22,7 @@ export default function Audit() {
       const res = await auditApi.events({
         sessionId: sessionId || undefined,
         eventType: eventType || undefined,
-        limit: 500,
+        limit: 200,
       })
       setEvents(res.events || [])
     } finally {
@@ -33,14 +38,11 @@ export default function Audit() {
     <div className="h-full overflow-y-auto p-6">
       <div className="mx-auto max-w-6xl">
         <div className="mb-5 flex flex-wrap items-end gap-3">
-          <div className="w-64">
-            <Input
-              label="Session ID"
-              placeholder="按会话过滤"
-              value={sessionId}
-              onChange={(event) => setSessionId(event.target.value)}
-            />
-          </div>
+          <SessionSelect
+            value={sessionId}
+            onChange={setSessionId}
+            sessions={sessions}
+          />
           <div className="w-56">
             <Input
               label="事件类型"
@@ -73,14 +75,18 @@ export default function Audit() {
                 <tr className="border-b border-border-primary bg-bg-tertiary/50">
                   <Th>事件</Th>
                   <Th>结果</Th>
-                  <Th>Run / Session</Th>
+                  <Th>会话</Th>
+                  <Th>Run</Th>
                   <Th>工具 / Action</Th>
                   <Th>时间</Th>
                 </tr>
               </thead>
               <tbody>
                 {events.map((event) => (
-                  <tr key={event.id} className="border-b border-border-secondary last:border-0 hover:bg-bg-hover/50">
+                  <tr
+                    key={event.id}
+                    className="border-b border-border-secondary last:border-0 hover:bg-bg-hover/50"
+                  >
                     <td className="px-4 py-3">
                       <div className="text-sm font-medium">{event.title}</div>
                       <div className="mt-0.5 font-mono text-[11px] text-text-tertiary">
@@ -92,12 +98,20 @@ export default function Audit() {
                         {event.result}
                       </Badge>
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="max-w-52 truncate font-mono text-[11px] text-text-secondary">
-                        {event.run_id || '-'}
+                    <td className="max-w-44 px-4 py-3">
+                      <div
+                        className="truncate text-xs text-text-secondary"
+                        title={event.session_id || ''}
+                      >
+                        {sessionTitle(sessions, event.session_id)}
                       </div>
-                      <div className="max-w-52 truncate font-mono text-[10px] text-text-tertiary">
-                        {event.session_id || '-'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div
+                        className="max-w-40 truncate font-mono text-[11px] text-text-tertiary"
+                        title={event.run_id || ''}
+                      >
+                        {event.run_id || '-'}
                       </div>
                     </td>
                     <td className="px-4 py-3 text-xs text-text-secondary">

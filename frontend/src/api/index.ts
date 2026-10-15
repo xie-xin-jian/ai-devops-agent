@@ -127,13 +127,19 @@ export const chatApi = {
         message_count: number
       }>
     }>('/api/chat/sessions'),
+  renameSession: (sessionId: string, title: string) =>
+    request<{ session_id: string; title: string }>(
+      `/api/chat/sessions/${encodeURIComponent(sessionId)}/rename`,
+      { method: 'POST', body: JSON.stringify({ title }) }
+    ),
 }
 
 export const actionApi = {
-  pending: (sessionId?: string, status?: string) => {
+  pending: (sessionId?: string, status?: string, limit?: number) => {
     const params = new URLSearchParams()
     if (sessionId) params.set('session_id', sessionId)
     if (status) params.set('status', status)
+    if (limit) params.set('limit', String(limit))
     const query = params.toString()
     return request<{ actions: PendingAction[] }>(
       `/api/actions/pending${query ? `?${query}` : ''}`
@@ -211,11 +217,13 @@ export const recoveryApi = {
   list: (params: {
     sessionId?: string
     status?: string
+    includeCompleted?: boolean
     limit?: number
   } = {}) => {
     const query = new URLSearchParams()
     if (params.sessionId) query.set('session_id', params.sessionId)
     if (params.status) query.set('status', params.status)
+    if (params.includeCompleted) query.set('include_completed', 'true')
     if (params.limit) query.set('limit', String(params.limit))
     const suffix = query.toString()
     return request<{ runs: any[] }>(
