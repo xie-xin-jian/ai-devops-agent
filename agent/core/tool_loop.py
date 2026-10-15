@@ -134,7 +134,9 @@ class ToolLoopMixin:
                 max_tokens=self.recovery.current_max_tokens,
             )
 
-        return with_retry(_call, self.recovery)
+        response = with_retry(_call, self.recovery)
+        self._record_usage(response)
+        return response
 
     def _create_tool_approval(self, block, decision):
         tool_input = (

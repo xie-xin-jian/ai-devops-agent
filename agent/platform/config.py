@@ -118,6 +118,12 @@ KEEP_RECENT_TOOL_RESULTS = 3
 PERSIST_THRESHOLD = 8000
 HISTORY_TOOL_LIMIT = 6000
 
+# 每百万 token 单价（人民币），用于估算每轮/每 run 的调用成本。
+# 按 deepseek-chat 公开价格设置；换模型时同步调整。
+PRICE_INPUT_PER_M = 2.0
+PRICE_OUTPUT_PER_M = 8.0
+PRICE_CACHE_HIT_PER_M = 0.5
+
 # CORS 允许的来源（逗号分隔），生产环境务必配置具体域名
 ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get(

@@ -26,6 +26,11 @@ from agent.observability.audit import (
 from agent.observability.logger import logger
 from agent.orchestration.approval_coordinator import ToolApprovalRequired
 from agent.orchestration.background import collect_background_results
+from agent.platform.config import (
+    PRICE_CACHE_HIT_PER_M,
+    PRICE_INPUT_PER_M,
+    PRICE_OUTPUT_PER_M,
+)
 from agent.sessions.state_store import (
     RUN_STATUS_CANCELED,
     RUN_STATUS_COMPLETED,
@@ -119,6 +124,57 @@ class AgentPipelineMixin:
             if executor is not None:
                 executor.cleanup_sandbox(getattr(self, "current_run_id", ""))
 
+    def _record_usage(self, response) -> None:
+        """累计每次模型调用的 token 用量，并按轮次写日志。"""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+
+        def _count(name: str) -> int:
+            return int(getattr(usage, name, 0) or 0)
+
+        input_tokens = _count("input_tokens")
+        output_tokens = _count("output_tokens")
+        cache_read = _count("cache_read_input_tokens")
+        cache_write = _count("cache_creation_input_tokens")
+
+        totals = getattr(self, "_usage_total", None)
+        if totals is None:
+            totals = self._usage_total = {
+                "calls": 0,
+                "input": 0,
+                "output": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+            }
+        totals["calls"] += 1
+        totals["input"] += input_tokens
+        totals["output"] += output_tokens
+        totals["cache_read"] += cache_read
+        totals["cache_write"] += cache_write
+
+        logger.info(
+            f"[turn {getattr(self, '_current_turn', 0)}] tokens "
+            f"in={input_tokens} out={output_tokens} "
+            f"cache_read={cache_read} cache_write={cache_write}"
+        )
+
+    def _usage_summary(self) -> dict:
+        """本次 run 的 token 汇总与成本估算（人民币）。"""
+        totals = getattr(self, "_usage_total", None) or {
+            "calls": 0,
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+        }
+        cost = (
+            totals["input"] / 1_000_000 * PRICE_INPUT_PER_M
+            + totals["output"] / 1_000_000 * PRICE_OUTPUT_PER_M
+            + totals["cache_read"] / 1_000_000 * PRICE_CACHE_HIT_PER_M
+        )
+        return {**totals, "est_cost_cny": round(cost, 4)}
+
     def _run_stream_impl(
         self,
         user_message: str,
@@ -177,6 +233,14 @@ class AgentPipelineMixin:
             return
 
         yield {"type": "status", "message": "准备中...", "turn": 0}
+
+        self._usage_total = {
+            "calls": 0,
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+        }
 
         bg_notifications = collect_background_results()
         if bg_notifications:
@@ -520,5 +584,17 @@ class AgentPipelineMixin:
             RUN_STATUS_COMPLETED,
             "completed",
         )
-        yield {"type": "done", "text": final_text, "total_turns": turn + 1}
+        usage = self._usage_summary()
+        logger.info(
+            f"[usage] run {self.current_run_id} turns={turn + 1} "
+            f"calls={usage['calls']} in={usage['input']} out={usage['output']} "
+            f"cache_read={usage['cache_read']} "
+            f"est_cost=¥{usage['est_cost_cny']}"
+        )
+        yield {
+            "type": "done",
+            "text": final_text,
+            "total_turns": turn + 1,
+            "usage": usage,
+        }
         logger.info(f"[done] 共 {turn + 1} 轮, 输出 {len(final_text)} 字符")
