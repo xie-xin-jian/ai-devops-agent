@@ -12,6 +12,7 @@ from agent.observability.audit import (
     SEVERITY_INFO,
 )
 from agent.tools.policy import evaluate_tool_policy
+from agent.tools.shell import suggest_tool_for_command
 
 
 class ToolLoopMixin:
@@ -210,6 +211,18 @@ class ToolLoopMixin:
                 metadata={"reason": decision.reason},
             )
             return f"Policy denied: {decision.reason}"
+
+        if block.name == "bash" and isinstance(block.input, dict):
+            suggestion = suggest_tool_for_command(
+                str(block.input.get("command", ""))
+            )
+            if suggestion is not None:
+                tool_name, reason = suggestion
+                return (
+                    f"Redirected: use `{tool_name}` instead ({reason}). "
+                    f"If it truly cannot cover this case, retry bash with "
+                    f"the command prefixed by `force:`."
+                )
 
         if decision.requires_approval:
             record = self._create_tool_approval(block, decision)

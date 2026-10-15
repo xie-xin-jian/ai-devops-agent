@@ -243,6 +243,40 @@ def run_ping_host(host: str, count: int = 4) -> str:
     return _run_cmd(["ping", "-c", str(c), host.strip()])
 
 
+def run_http_check(url: str, timeout: int = 10) -> str:
+    """HTTP 健康检查：返回状态码、响应耗时和正文摘要。
+
+    Args:
+        url: 目标 URL，如 http://127.0.0.1:8000/health
+        timeout: 超时秒数，默认 10，最大 30
+    """
+    import time
+    import urllib.error
+    import urllib.request
+
+    if not url or not url.strip():
+        return "Error: url is required"
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    t = max(1, min(int(timeout or 10), 30))
+    start = time.monotonic()
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "ai-devops-agent"}
+        )
+        with urllib.request.urlopen(req, timeout=t) as resp:
+            body = resp.read(2048).decode("utf-8", "replace")
+            elapsed = time.monotonic() - start
+            return f"HTTP {resp.status} ({elapsed:.2f}s)\n{body[:500]}"
+    except urllib.error.HTTPError as exc:
+        elapsed = time.monotonic() - start
+        detail = exc.read(500).decode("utf-8", "replace")
+        return f"HTTP {exc.code} ({elapsed:.2f}s)\n{detail}"
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
 # ═══════════════════════════════════════════════════════════
 # 新增：磁盘 IO
 # ═══════════════════════════════════════════════════════════
@@ -381,6 +415,26 @@ PING_HOST_SCHEMA = {
     },
 }
 
+# ── HTTP 检查 ──
+HTTP_CHECK_SCHEMA = {
+    "name": "http_check",
+    "description": "Check an HTTP endpoint: returns status code and latency. Use this for health checks instead of curl via bash.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "Target URL, e.g. 'http://127.0.0.1:8000/health'",
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Timeout seconds (1-30, default 10)",
+            },
+        },
+        "required": ["url"],
+    },
+}
+
 # ── 磁盘 IO ──
 DISK_IO_SCHEMA = {
     "name": "disk_io",
@@ -419,6 +473,7 @@ OPS_TOOL_SCHEMAS = [
     NETWORK_INTERFACES_SCHEMA,
     PORT_LISTEN_SCHEMA,
     PING_HOST_SCHEMA,
+    HTTP_CHECK_SCHEMA,
     DISK_IO_SCHEMA,
     SYSTEM_LOGS_SCHEMA,
 ]
@@ -434,6 +489,7 @@ OPS_TOOL_HANDLERS = {
     "network_interfaces": run_network_interfaces,
     "port_listen": run_port_listen,
     "ping_host": run_ping_host,
+    "http_check": run_http_check,
     "disk_io": run_disk_io,
     "system_logs": run_system_logs,
 }

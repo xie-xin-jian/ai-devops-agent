@@ -32,4 +32,4 @@ def test_docker_tools_are_not_registered():
     assert names.isdisjoint({"docker_ps", "docker_logs", "docker_stats"})
     assert names.isdisjoint({"read_file", "write_file", "edit_file", "glob"})
     assert names.isdisjoint({"todo_write", "connect_mcp"})
-    assert len(names) == 44
+    assert len(names) == 45

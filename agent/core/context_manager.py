@@ -70,7 +70,10 @@ class ContextManagerMixin:
             "only its summary. Keep the subagent's scope self-contained.\n"
             "- Prefer the dedicated inspection tools (cpu_usage, memory_usage, "
             "disk_io, process_top, ping_host) over raw bash when checking system "
-            "health, so results stay structured.",
+            "health, so results stay structured. Use http_check for HTTP health "
+            "checks instead of curl. Simple inspection commands in bash "
+            "(ss -tlnp, df -h, curl GET, pgrep) are auto-redirected to the "
+            "dedicated tool; call the tool directly.",
         ]
         target = getattr(self, "target", None)
         if target is not None:

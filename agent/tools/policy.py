@@ -188,6 +188,13 @@ def _build_builtin_policies() -> dict[str, ToolPolicy]:
             required_scopes=(OPS_READ,),
         ),
         _make_policy(
+            "http_check",
+            read_only=True,
+            risk_level=READ_ONLY,
+            requires_approval=False,
+            required_scopes=(OPS_READ,),
+        ),
+        _make_policy(
             "target_list_files",
             read_only=True,
             risk_level=READ_ONLY,
