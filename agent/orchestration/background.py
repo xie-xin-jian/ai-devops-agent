@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from agent.observability.audit import record_event
+from agent.persistence import writer as persistence_writer
 from agent.platform.config import BACKGROUND_DIR
 from agent.platform.identity import Principal, system_admin_principal
 from agent.platform.storage import atomic_write_json
@@ -87,6 +88,7 @@ def _persist_task(bg_id: str) -> None:
         "updated_at": time.time(),
     }
     atomic_write_json(_background_path(bg_id), payload)
+    persistence_writer.persist_background_task(payload)
 
 
 def _load_persisted_tasks() -> dict[str, dict]:
@@ -102,6 +104,11 @@ def _load_persisted_tasks() -> dict[str, dict]:
         bg_id = str(data.get("background_id") or path.stem)
         tasks[bg_id] = data
     return tasks
+
+
+def load_persisted_background_tasks() -> dict[str, dict]:
+    """Persisted background task records keyed by background id."""
+    return _load_persisted_tasks()
 
 
 def recover_interrupted_background_tasks(reason: str) -> list[dict]:
@@ -120,6 +127,11 @@ def recover_interrupted_background_tasks(reason: str) -> list[dict]:
         data["interruption_reason"] = str(reason)
         data["updated_at"] = time.time()
         atomic_write_json(path, data)
+        persistence_writer.mark_background_interrupted(
+            bg_id,
+            reason=str(reason),
+            at=float(data["updated_at"]),
+        )
         recovered.append({"background_id": bg_id, **data})
         record_event(
             "background.run.interrupted",
@@ -224,6 +236,7 @@ def start_background_task(
             _persist_task(bg_id)
 
     with background_lock:
+        created_at = time.time()
         background_tasks[bg_id] = {
             "tool_use_id": (
                 block.id if hasattr(block, "id")
@@ -236,6 +249,7 @@ def start_background_task(
             "session_id": session_id,
             "owner_id": owner_id,
             "source": "background",
+            "created_at": created_at,
         }
     _persist_task(bg_id)
     threading.Thread(
@@ -356,6 +370,7 @@ __all__ = [
     "background_tasks",
     "collect_background_results",
     "is_slow_operation",
+    "load_persisted_background_tasks",
     "list_background_tasks",
     "recover_interrupted_background_tasks",
     "should_run_background",

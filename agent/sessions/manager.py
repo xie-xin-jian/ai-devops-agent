@@ -26,6 +26,29 @@ def _message_text(content) -> str:
     return ""
 
 
+def _session_summary(record: dict) -> tuple[int, str]:
+    """Message count and first user message, from either read path.
+
+    The local store returns the raw message list; the PostgreSQL list read
+    deliberately skips message history and returns a count plus the single
+    message the sidebar needs for its title.
+    """
+    if "messages" in record:
+        count = 0
+        first_user = ""
+        for item in record.get("messages") or []:
+            if not isinstance(item, dict):
+                continue
+            count += 1
+            if not first_user and item.get("role") == "user":
+                first_user = _message_text(item.get("content"))
+        return count, first_user
+    return (
+        int(record.get("message_count") or 0),
+        _message_text(record.get("first_user_message")),
+    )
+
+
 class SessionAccessError(PermissionError):
     """Raised when a principal cannot access an existing session."""
 
@@ -134,6 +157,7 @@ class SessionManager:
                 owner_id=principal.id,
                 messages=[],
                 target_id="",
+                ttl_seconds=self.ttl.total_seconds(),
             )
         record_event(
             "session.restored" if stored_session else "session.created",
@@ -176,6 +200,7 @@ class SessionManager:
             owner_id=session.get("owner_id") or principal.id,
             messages=agent.get_messages(),
             target_id=identifier,
+            ttl_seconds=self.ttl.total_seconds(),
         )
         record_event(
             "session.target_activated",
@@ -245,14 +270,7 @@ class SessionManager:
             owner_id = str(record.get("owner_id") or "")
             if not self._can_access_owner(owner_id, principal):
                 continue
-            first_user = ""
-            message_count = 0
-            for item in record.get("messages") or []:
-                if not isinstance(item, dict):
-                    continue
-                message_count += 1
-                if not first_user and item.get("role") == "user":
-                    first_user = _message_text(item.get("content"))
+            message_count, first_user = _session_summary(record)
             title = str(record.get("title") or "").strip()
             sessions.append({
                 "id": sid,

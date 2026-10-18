@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Optional
+from agent.persistence import writer as persistence_writer
 from agent.platform.config import CRON_LOG_DIR, DURABLE_CRON_PATH
 from agent.platform.storage import atomic_write_json
 
@@ -161,6 +162,8 @@ def save_durable_jobs():
                 if job.durable
             }
             atomic_write_json(DURABLE_CRON_PATH, durable)
+            jobs = list(durable.values())
+        persistence_writer.persist_cron_jobs(jobs)
     except Exception:
         pass
 
@@ -185,6 +188,15 @@ def load_durable_jobs():
                     created_at=job_data.get("created_at", time.time()),
                 )
                 scheduled_jobs[jid] = job
+            # Mirror on load so a job created before the mirror was enabled
+            # still has a row to claim against.
+            persistence_writer.persist_cron_jobs(
+                [
+                    asdict(job)
+                    for job in scheduled_jobs.values()
+                    if job.durable
+                ]
+            )
     except Exception:
         pass
 
@@ -219,6 +231,7 @@ def schedule_job(
 
     if durable:
         save_durable_jobs()
+    persistence_writer.persist_cron_job(asdict(job))
 
     return job, f"Job {job_id} scheduled"
 
@@ -232,6 +245,7 @@ def cancel_job(job_id: str) -> str:
             return f"Job {job_id} not found"
 
     save_durable_jobs()
+    persistence_writer.delete_cron_job(job_id)
     return f"Job {job_id} cancelled"
 
 
@@ -261,6 +275,7 @@ def _save_cron_run_log(
         ts = fired_at.strftime("%Y%m%d_%H%M%S")
         log_path = CRON_LOG_DIR / f"{job.id}__{ts}.json"
         log = {
+            "id": f"{job.id}__{ts}",
             "job_id": job.id,
             "cron": job.cron,
             "prompt": job.prompt,
@@ -273,6 +288,7 @@ def _save_cron_run_log(
             "session_id": session_id,
         }
         atomic_write_json(log_path, log)
+        persistence_writer.persist_cron_log(log)
     except Exception:
         pass
 
@@ -400,24 +416,49 @@ def cron_scheduler_loop():
         schedule_changed = False
 
         with cron_lock:
-            for job_id, job in list(scheduled_jobs.items()):
-                if not job.enabled:
+            enabled_jobs = [
+                (job_id, job)
+                for job_id, job in scheduled_jobs.items()
+                if job.enabled
+            ]
+
+        due_jobs = [
+            (job_id, job)
+            for job_id, job in enabled_jobs
+            if cron_matches(job.cron, now_truncated)
+        ]
+
+        # Durable jobs are claimed in PostgreSQL so that restarts and extra
+        # worker processes cannot fire the same job twice. Non-durable jobs
+        # only exist in memory, so they keep the process-local gate.
+        claimed = persistence_writer.claim_due_cron_jobs(
+            [job_id for job_id, job in due_jobs if job.durable],
+            minute_epoch=now_truncated.timestamp(),
+        )
+
+        for job_id, job in due_jobs:
+            if job.durable and claimed is not None:
+                if job_id not in claimed:
                     continue
-                if cron_matches(job.cron, now_truncated):
-                    last = _last_fired.get(job_id)
-                    if last is None or last < now_truncated:
-                        _last_fired[job_id] = now_truncated
+                _last_fired[job_id] = now_truncated
+            else:
+                last = _last_fired.get(job_id)
+                if last is not None and last >= now_truncated:
+                    continue
+                _last_fired[job_id] = now_truncated
 
-                        if not job.recurring:
-                            del scheduled_jobs[job_id]
-                            _last_fired.pop(job_id, None)
-                            schedule_changed = True
+            if not job.recurring:
+                with cron_lock:
+                    scheduled_jobs.pop(job_id, None)
+                _last_fired.pop(job_id, None)
+                schedule_changed = True
+                persistence_writer.delete_cron_job(job_id)
 
-                        if _reserve_job(job_id):
-                            _cron_execution_queue.put((job, now_truncated))
+            if _reserve_job(job_id):
+                _cron_execution_queue.put((job, now_truncated))
 
-            if schedule_changed:
-                save_durable_jobs()
+        if schedule_changed:
+            save_durable_jobs()
 
         time.sleep(1)
 

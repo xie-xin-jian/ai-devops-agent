@@ -36,6 +36,16 @@ build/
 .task_outputs/
 .worktrees/
 
+# 评估用例库先留在本地（只提交评估结果的表结构）
+eval/
+scripts/check_eval_cases.py
+
+# 迁移学习记录：只留在本地
+docs/pg-learning-notes.md
+
+# 个人学习/面试笔记：只留在本地，不提交到 GitHub
+docs/notes/
+
 # 前端构建产物（服务器上重新构建）
 static/
 tsconfig.tsbuildinfo

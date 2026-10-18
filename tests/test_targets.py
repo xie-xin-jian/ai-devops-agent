@@ -280,3 +280,5 @@ def test_target_api_browse_and_create(tmp_path, monkeypatch):
     assert browse.json()["entries"][0]["name"] == "trip"
     assert created.status_code == 200
     assert created.json()["name"] == "旅游助手"
+
+

@@ -51,6 +51,52 @@ ENABLE_MOCK_MCP = os.environ.get(
     "ENABLE_MOCK_MCP", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
 TARGET_BROWSE_ROOTS = _env_path_list("TARGET_BROWSE_ROOTS")
+PERSISTENCE_BACKEND = (
+    os.environ.get("PERSISTENCE_BACKEND", "json").strip().lower() or "json"
+)
+# Read path: "json" (default) keeps every read on the local store. "postgres"
+# switches the domains listed in PERSISTENCE_READ_DOMAINS to PostgreSQL.
+PERSISTENCE_READ = (
+    os.environ.get("PERSISTENCE_READ", "json").strip().lower() or "json"
+)
+PERSISTENCE_READ_DOMAINS = tuple(
+    item.strip().lower()
+    for item in os.environ.get("PERSISTENCE_READ_DOMAINS", "").split(",")
+    if item.strip()
+)
+# Shadow reads: after serving a single-record read from PostgreSQL, also read
+# the local store and compare. Catches query-level differences (filters,
+# ownership, "one side says missing") that a whole-domain check cannot see.
+PERSISTENCE_SHADOW = os.environ.get(
+    "PERSISTENCE_SHADOW", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+# Minimum seconds between drift events for the same domain, so a broken
+# domain cannot flood the audit log.
+PERSISTENCE_SHADOW_COOLDOWN_SECONDS = max(
+    0,
+    int(os.environ.get("PERSISTENCE_SHADOW_COOLDOWN_SECONDS", "60")),
+)
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+# Background JSON-vs-PostgreSQL drift check interval. 0 disables the watcher.
+PERSISTENCE_CONSISTENCY_INTERVAL_SECONDS = max(
+    0,
+    int(os.environ.get("PERSISTENCE_CONSISTENCY_INTERVAL_SECONDS", "900")),
+)
+DB_AUTO_MIGRATE = os.environ.get(
+    "DB_AUTO_MIGRATE", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+DB_POOL_SIZE = max(1, int(os.environ.get("DB_POOL_SIZE", "5")))
+DB_MAX_OVERFLOW = max(0, int(os.environ.get("DB_MAX_OVERFLOW", "10")))
+# Without a connect timeout a dead database makes every mirror write wait for
+# the OS TCP timeout (measured: 130s on Windows). A few seconds is long enough
+# for a healthy server and short enough not to stall the caller.
+DB_CONNECT_TIMEOUT = max(1, int(os.environ.get("DB_CONNECT_TIMEOUT", "5")))
+# After one failure, stop hammering the database for this many seconds: every
+# mirror write during an outage would otherwise pay the timeout again.
+DB_FAILURE_COOLDOWN_SECONDS = max(
+    0,
+    int(os.environ.get("DB_FAILURE_COOLDOWN_SECONDS", "30")),
+)
 
 SKILLS_DIR = WORKDIR / "skills"
 TRANSCRIPT_DIR = DATA_DIR / ".transcripts"

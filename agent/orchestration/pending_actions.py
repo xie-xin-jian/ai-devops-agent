@@ -8,6 +8,9 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from agent.persistence import writer as persistence_writer
+from agent.persistence.routing import pg_read, shadow_compare
+from agent.persistence.repositories import actions as action_repo
 from agent.platform.config import DATA_DIR
 from agent.platform.storage import atomic_write_text, get_path_lock
 from agent.tools.policy import get_tool_policy
@@ -196,9 +199,27 @@ class PendingActionStore:
             records = self._load_unlocked()
             records[action_id] = record.to_dict()
             self._save_unlocked(records)
+        persistence_writer.persist_action(record.to_dict())
         return record
 
     def get(self, action_id: str) -> PendingAction | None:
+        used_postgres, record = pg_read(
+            "actions",
+            lambda: action_repo.fetch_action(action_id),
+        )
+        if used_postgres:
+            action = PendingAction.from_dict(record) if record else None
+            shadow_compare(
+                "actions",
+                str(action_id or ""),
+                postgres_value=action,
+                json_reader=lambda: self._local_get(action_id),
+            )
+            return action
+
+        return self._local_get(action_id)
+
+    def _local_get(self, action_id: str) -> PendingAction | None:
         with self._lock:
             data = self._load_unlocked().get(str(action_id))
         return PendingAction.from_dict(data) if data else None
@@ -216,6 +237,20 @@ class PendingActionStore:
         returned slice is deserialized into dataclasses (the file holds
         full payloads and grows with history).
         """
+        used_postgres, records = pg_read(
+            "actions",
+            lambda: action_repo.fetch_actions(
+                session_id=session_id,
+                status=status,
+                limit=limit,
+            ),
+        )
+        if used_postgres:
+            return [
+                PendingAction.from_dict(item)
+                for item in records or []
+            ]
+
         with self._lock:
             records = list(self._load_unlocked().values())
         if session_id:
@@ -257,27 +292,40 @@ class PendingActionStore:
             data = records.get(str(action_id))
             if data is None:
                 raise KeyError(action_id)
-            record = PendingAction.from_dict(data)
-            if record.status != STATUS_PENDING:
-                raise ValueError(
-                    f"Pending action {action_id} is {record.status}"
-                )
-            now = time.time()
-            record.status = STATUS_CONFIRMED
-            record.confirmed_by = str(actor or "api-user")
-            record.confirmed_at = now
-            record.updated_at = now
-            record.result_payload = {
-                **record.result_payload,
-                "execution_enabled": False,
-                "message": (
-                    "Action confirmed. Execution will be enabled in the "
-                    "sandbox execution stage."
-                ),
-            }
+            record = self._apply_confirm(
+                PendingAction.from_dict(data),
+                action_id,
+                actor,
+            )
             records[action_id] = record.to_dict()
             self._save_unlocked(records)
-            return record
+        persistence_writer.confirm_action(action_id, record.to_dict())
+        return record
+
+    @staticmethod
+    def _apply_confirm(
+        record: PendingAction,
+        action_id: str,
+        actor: str,
+    ) -> PendingAction:
+        if record.status != STATUS_PENDING:
+            raise ValueError(
+                f"Pending action {action_id} is {record.status}"
+            )
+        now = time.time()
+        record.status = STATUS_CONFIRMED
+        record.confirmed_by = str(actor or "api-user")
+        record.confirmed_at = now
+        record.updated_at = now
+        record.result_payload = {
+            **record.result_payload,
+            "execution_enabled": False,
+            "message": (
+                "Action confirmed. Execution will be enabled in the "
+                "sandbox execution stage."
+            ),
+        }
+        return record
 
     def cancel(
         self,
@@ -291,20 +339,35 @@ class PendingActionStore:
             data = records.get(str(action_id))
             if data is None:
                 raise KeyError(action_id)
-            record = PendingAction.from_dict(data)
-            if record.status not in {STATUS_PENDING, STATUS_CONFIRMED}:
-                raise ValueError(
-                    f"Pending action {action_id} is {record.status}"
-                )
-            now = time.time()
-            record.status = STATUS_CANCELED
-            record.canceled_by = str(actor or "api-user")
-            record.canceled_at = now
-            record.cancel_reason = str(reason or "").strip()
-            record.updated_at = now
+            record = self._apply_cancel(
+                PendingAction.from_dict(data),
+                action_id,
+                actor,
+                reason,
+            )
             records[action_id] = record.to_dict()
             self._save_unlocked(records)
-            return record
+        persistence_writer.cancel_action(action_id, record.to_dict())
+        return record
+
+    @staticmethod
+    def _apply_cancel(
+        record: PendingAction,
+        action_id: str,
+        actor: str,
+        reason: str,
+    ) -> PendingAction:
+        if record.status not in {STATUS_PENDING, STATUS_CONFIRMED}:
+            raise ValueError(
+                f"Pending action {action_id} is {record.status}"
+            )
+        now = time.time()
+        record.status = STATUS_CANCELED
+        record.canceled_by = str(actor or "api-user")
+        record.canceled_at = now
+        record.cancel_reason = str(reason or "").strip()
+        record.updated_at = now
+        return record
 
     def finish(
         self,
@@ -320,17 +383,32 @@ class PendingActionStore:
             data = records.get(str(action_id))
             if data is None:
                 raise KeyError(action_id)
-            record = PendingAction.from_dict(data)
-            if record.status != STATUS_CONFIRMED:
-                raise ValueError(
-                    f"Pending action {action_id} is {record.status}"
-                )
-            record.status = status
-            record.result_payload = dict(result_payload or {})
-            record.updated_at = time.time()
+            record = self._apply_finish(
+                PendingAction.from_dict(data),
+                action_id,
+                status,
+                result_payload,
+            )
             records[action_id] = record.to_dict()
             self._save_unlocked(records)
-            return record
+        persistence_writer.finish_action(action_id, record.to_dict())
+        return record
+
+    @staticmethod
+    def _apply_finish(
+        record: PendingAction,
+        action_id: str,
+        status: str,
+        result_payload: dict,
+    ) -> PendingAction:
+        if record.status != STATUS_CONFIRMED:
+            raise ValueError(
+                f"Pending action {action_id} is {record.status}"
+            )
+        record.status = status
+        record.result_payload = dict(result_payload or {})
+        record.updated_at = time.time()
+        return record
 
     def recover_interrupted(self, reason: str) -> list[PendingAction]:
         """Fail confirmed actions that never reached a terminal state."""
@@ -355,6 +433,8 @@ class PendingActionStore:
                 recovered.append(record)
             if changed:
                 self._save_unlocked(records)
+        if recovered:
+            persistence_writer.recover_interrupted_actions(str(reason))
         return recovered
 
 

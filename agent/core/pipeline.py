@@ -26,6 +26,7 @@ from agent.observability.audit import (
 from agent.observability.logger import logger
 from agent.orchestration.approval_coordinator import ToolApprovalRequired
 from agent.orchestration.background import collect_background_results
+from agent.persistence.writer import persist_run_usage
 from agent.platform.config import (
     PRICE_CACHE_HIT_PER_M,
     PRICE_INPUT_PER_M,
@@ -153,10 +154,41 @@ class AgentPipelineMixin:
         totals["cache_read"] += cache_read
         totals["cache_write"] += cache_write
 
+        call_cost = self._estimate_usage_cost({
+            "input": input_tokens,
+            "output": output_tokens,
+            "cache_read": cache_read,
+        })
+        persist_run_usage(
+            run_id=getattr(self, "current_run_id", ""),
+            session_id=getattr(self, "session_id", ""),
+            turn=getattr(self, "_current_turn", 0),
+            model_id=self.recovery.current_model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+            estimated_cost_cny=call_cost,
+        )
+
         logger.info(
             f"[turn {getattr(self, '_current_turn', 0)}] tokens "
             f"in={input_tokens} out={output_tokens} "
             f"cache_read={cache_read} cache_write={cache_write}"
+        )
+
+    @staticmethod
+    def _estimate_usage_cost(totals: dict) -> float:
+        return (
+            int(totals.get("input", 0) or 0)
+            / 1_000_000
+            * PRICE_INPUT_PER_M
+            + int(totals.get("output", 0) or 0)
+            / 1_000_000
+            * PRICE_OUTPUT_PER_M
+            + int(totals.get("cache_read", 0) or 0)
+            / 1_000_000
+            * PRICE_CACHE_HIT_PER_M
         )
 
     def _usage_summary(self) -> dict:
@@ -168,11 +200,7 @@ class AgentPipelineMixin:
             "cache_read": 0,
             "cache_write": 0,
         }
-        cost = (
-            totals["input"] / 1_000_000 * PRICE_INPUT_PER_M
-            + totals["output"] / 1_000_000 * PRICE_OUTPUT_PER_M
-            + totals["cache_read"] / 1_000_000 * PRICE_CACHE_HIT_PER_M
-        )
+        cost = self._estimate_usage_cost(totals)
         return {**totals, "est_cost_cny": round(cost, 4)}
 
     def _run_stream_impl(

@@ -7,7 +7,7 @@ from api.auth import require_permissions
 from api.schemas import TaskClaimRequest, TaskCompleteRequest, TaskCreateRequest
 from agent.orchestration.tasks import (
     Task, create_task, list_tasks, load_task, claim_task, complete_task,
-    TASKS_DIR,
+    delete_task as remove_task,
 )
 from agent.observability.audit import record_event
 
@@ -129,12 +129,11 @@ async def delete_task(
     task_id: str,
     _principal: Principal = Depends(require_permissions(TASK_WRITE)),
 ):
-    """删除任务（直接删 JSON 文件）。"""
-    path = TASKS_DIR / f"{task_id}.json"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    """删除任务及其持久化镜像。"""
     try:
-        path.unlink()
+        remove_task(task_id)
         return {"success": True, "deleted": task_id}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

@@ -257,6 +257,199 @@ Target 支持以下可选配置：
 默认重启使用参数列表执行，不经过宿主 Shell；自定义 `restart_command` 和
 `deploy_command` 会在审批记录中保存并展示完整命令。
 
+## PostgreSQL 持久化
+
+持久化改造保持 JSON 为默认运行方式，并支持可选双写：
+
+```env
+PERSISTENCE_BACKEND=json
+DATABASE_URL=postgresql+psycopg://ai_devops:change-me@postgres:5432/ai_devops
+```
+
+支持三种模式：
+
+| 模式 | 行为 |
+|---|---|
+| `json` | 保持原有 JSON / JSONL 持久化，不依赖 PostgreSQL |
+| `dual` | 继续写 JSON，同时把已接入的领域镜像写入 PostgreSQL |
+| `postgres` | 已接入的领域只写 PostgreSQL |
+
+已接入 PostgreSQL 的数据：
+
+- `audit_events`
+- `run_usage`
+- `targets`
+- `tasks` / `task_dependencies`
+- `memories`
+- `pending_actions`
+- `cron_jobs` / `cron_logs`
+- `background_tasks`
+- `sessions` / `messages`
+- `runs` / `run_snapshots`
+
+状态转换（审批确认 / 拒绝 / 执行结果）通过 PostgreSQL 条件更新实现 CAS，
+Cron 抢占使用 `FOR UPDATE SKIP LOCKED`，因此多进程和重启都不会重复触发；
+数据库不可用时调度器会退回进程内判断，而不是停止调度。
+
+读路径默认仍走本地 JSON，可以按域切换：
+
+```env
+PERSISTENCE_READ=postgres
+PERSISTENCE_READ_DOMAINS=targets
+```
+
+支持切读的域：`targets`、`tasks`、`memories`、`actions`、`sessions`、`runs`。
+留空 `PERSISTENCE_READ_DOMAINS` 表示全部切换。数据库不可达时读操作会自动
+回退到本地 Store，记录不存在时则按不存在处理，不会把已删除的数据“读回来”。
+当前读路由可以从 `GET /health` 的 `persistence` 字段查看。
+
+**本地文件与 PostgreSQL 同时写，这是有意的**：读全部来自数据库，本地文件不再作为
+事实来源，而是数据库故障时的写入日志、独立副本与对账参照。关掉本地写入会让"数据库
+故障"从"镜像延迟"变成"数据丢失"，所以这条路径（以及对应的开关）在评估后被删除。
+
+数据库自身的备份（与本地文件副本互补）：
+
+```bash
+pg_dump --format=custom --file=D:\ai_agent\data\pg-backups\ai_devops-YYYYmmdd.dump \
+  "postgresql://ai_devops:change-me@127.0.0.1:5433/ai_devops"
+```
+
+`GET /health` 的 `persistence.mirror` 给出镜像写的健康度：
+
+```json
+{"enabled": true, "totals": {"calls": 65, "failures": 0, "skipped": 0}}
+```
+
+`failures` 是抛异常的尝试（数据库不可达、约束冲突），`skipped` 是 repository
+拒绝的记录（数据本身不合法），后者是 `calls` 的子集。判断双写是否稳定看
+`failures` 是否为 0。
+
+切读期间建议打开灰度双读：每次单条查询都会再读一遍本地 Store 做对比，只报告
+不改变返回值，专门覆盖过滤器、归属判断、一侧缺失这类定期对账看不到的问题。
+
+```env
+PERSISTENCE_SHADOW=1
+PERSISTENCE_SHADOW_COOLDOWN_SECONDS=60
+```
+
+`GET /health` 会返回 `shadow_checks` / `shadow_mismatches` / `shadow_last_mismatch`，
+不一致时写 `persistence.shadow.mismatch` 审计事件（high 级，按域冷却）。
+
+读取路径仍然走 JSON，PostgreSQL 目前是影子副本；切换读取属于后续阶段，
+在一致性校验完成前不要把 `dual` 改成 `postgres`。
+
+Redis 将放到下一阶段，用于运行锁、取消信号、审批唤醒和任务租约，
+当前不进入第一轮依赖和 Compose。
+
+启动 PostgreSQL：
+
+```bash
+docker compose up -d postgres
+```
+
+创建数据库表：
+
+```bash
+alembic upgrade head
+```
+
+检查连接状态：
+
+```bash
+python scripts/check_persistence.py
+```
+
+把历史 `events.jsonl` 幂等导入 PostgreSQL：
+
+```bash
+python scripts/migrate_audit_to_postgres.py
+```
+
+把 Domain 与自动化域的 JSON 数据幂等导入 PostgreSQL：
+
+```bash
+python scripts/migrate_store_to_postgres.py --domain all
+```
+
+可选域：`targets`、`tasks`、`memories`、`actions`、`cron`、`background`、`sessions`、`runs`。
+
+切换读取之前必须先在真实数据库上跑一致性对账，它只读不修复：
+
+```bash
+PERSISTENCE_BACKEND=dual python scripts/check_persistence_consistency.py
+```
+
+退出码为 0 表示 JSON 与 PostgreSQL 没有漂移；非 0 会列出缺失与内容不一致的记录。
+
+发现漂移后的修复命令（`--force` 会忽略 `updated_at` 判据，重写每一行）：
+
+```bash
+python scripts/migrate_store_to_postgres.py --domain memories --force
+```
+
+双写模式下还会启动一个后台巡检线程（默认 900 秒一次，可用
+`PERSISTENCE_CONSISTENCY_INTERVAL_SECONDS=0` 关闭），只在漂移域集合发生变化时
+写审计事件，避免刷日志。
+
+### 写路径覆盖验证
+
+单元测试证明映射逻辑正确，但不能证明"每条真实写路径都走到了镜像"。这个脚本把
+每个域的写操作真跑一遍（建/改/删/状态流转），再按 key 逐个确认记录进了 PostgreSQL：
+
+```bash
+python scripts/verify_persistence_coverage.py \
+  --database-url postgresql+psycopg://ai_devops:change-me@127.0.0.1:5433/ai_devops
+```
+
+默认把本地数据写进系统临时目录，并在结束时删掉本次创建的镜像行，跑完数据库保持原样
+（`--keep-records` / `--keep-data` 可以保留现场）。覆盖 10 个域、50+ 个写操作，
+输出里 `ok: true` 表示每条写路径都进了镜像。
+
+脚本会在 PostgreSQL 里创建并随后删除一个独立的 `coverage_<随机>` schema：覆盖过程
+包含"把所有非终态 run 标为中断""把所有 confirmed 审批标为失败""归档最老的记忆"这类
+全局操作，跑在真实 schema 上会改写用户数据。`--keep-schema` 可以保留现场排查，
+`--schema` 可以指定固定 schema 名。
+
+### 本地 PostgreSQL（不用 Docker）
+
+如果本机没有可用的 PostgreSQL，可以装一份独立的、不进系统服务的实例：
+
+```powershell
+conda create -y -p D:\pglocal -c conda-forge --override-channels postgresql=16
+D:\pglocal\Library\bin\initdb.exe -D D:\ai_agent\data\pg-local -U postgres -E UTF8 --locale=C -A trust
+D:\pglocal\Library\bin\pg_ctl.exe -D D:\ai_agent\data\pg-local -o "-p 5433 -c listen_addresses=127.0.0.1" -l D:\ai_agent\data\pg-local\server.log start
+```
+
+建库并跑迁移：
+
+```bash
+DATABASE_URL=postgresql+psycopg://ai_devops:change-me@127.0.0.1:5433/ai_devops alembic upgrade head
+```
+
+停止与启动：
+
+```powershell
+D:\pglocal\Library\bin\pg_ctl.exe -D D:\ai_agent\data\pg-local stop
+D:\pglocal\Library\bin\pg_ctl.exe -D D:\ai_agent\data\pg-local -o "-p 5433 -c listen_addresses=127.0.0.1" start
+```
+
+这个实例用 `trust` 认证、只监听 `127.0.0.1`，仅适合本机开发验证，不要当成部署方案。
+集成测试通过环境变量启用：
+
+```bash
+PERSISTENCE_TEST_DATABASE_URL="postgresql+psycopg://ai_devops:change-me@127.0.0.1:5433/ai_devops" \
+  python -m pytest tests/test_persistence_pg_integration.py -q
+```
+
+项目自带的 `docker-compose.yml` 仍然以 `postgres:16-alpine` 为准，两种方式不要同时用。
+
+需要真实数据库的集成测试（未设置环境变量时自动跳过）：
+
+```bash
+PERSISTENCE_TEST_DATABASE_URL="postgresql+psycopg://ai_devops:change-me@127.0.0.1:5432/ai_devops" \
+  python -m pytest tests/test_persistence_pg_integration.py -q
+```
+
 ## API 认证
 
 当 `.env` 中设置：
@@ -574,6 +767,12 @@ curl -X POST http://localhost:8000/api/cron/ \
 ```
 
 ## 测试
+
+### Agent 评估（数据层）
+
+评估结果的表结构已包含在迁移里（`eval_batches` / `eval_trials` /
+`eval_tool_calls` / `eval_scores`），建议跑在独立的 `ai_devops_eval` 数据库上。
+用例库与执行器暂未纳入本仓库。
 
 ```bash
 pytest -q

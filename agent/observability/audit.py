@@ -11,7 +11,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+import agent.platform.config as config
 from agent.platform.config import AUDIT_DIR
+from agent.persistence import writer as persistence_writer
 from agent.observability.logger import logger
 from agent.platform.storage import get_path_lock
 
@@ -242,12 +244,19 @@ def record_event(
         payload=_redact_value(payload or {}),
         metadata=_redact_value(metadata or {}),
     )
-    try:
-        AuditStore().append(event)
-    except Exception:
-        logger.exception("Failed to persist audit event: %s", event_type)
-        return None
-    return event
+    backend = config.PERSISTENCE_BACKEND
+    stored = False
+    if backend in {"json", "dual"}:
+        try:
+            AuditStore().append(event)
+            stored = True
+        except Exception:
+            logger.exception("Failed to persist audit event: %s", event_type)
+    if backend == "dual":
+        stored = persistence_writer.persist_audit_event(event) or stored
+    elif backend == "postgres":
+        stored = persistence_writer.persist_audit_event(event)
+    return event if stored else None
 
 
 __all__ = [

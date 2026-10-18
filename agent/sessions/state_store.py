@@ -17,7 +17,14 @@ from pathlib import Path
 from typing import Any
 
 import agent.platform.config as config
+from agent.persistence import writer as persistence_writer
+from agent.persistence.routing import pg_read, shadow_compare
+from agent.persistence.repositories import runs as run_repo
+from agent.persistence.repositories import sessions as session_repo
 from agent.platform.storage import atomic_write_json, get_path_lock
+
+
+DEFAULT_SESSION_TTL_SECONDS = 2 * 60 * 60
 
 
 RUN_STATUS_RUNNING = "running"
@@ -117,6 +124,75 @@ def _safe_name(value: str, fallback_prefix: str) -> str:
     return safe or f"{fallback_prefix}_{int(time.time() * 1000)}"
 
 
+def _compose_session_record(
+    existing: dict,
+    *,
+    session_id: str,
+    owner_id: str,
+    messages: list,
+    status: str,
+    target_id: str | None,
+    title: str | None,
+    now: float,
+) -> dict:
+    """Build a session record from the previous state of the active read path."""
+    return {
+        "session_id": str(session_id),
+        "owner_id": str(owner_id or existing.get("owner_id") or ""),
+        "status": str(status or "active"),
+        "target_id": (
+            str(target_id)
+            if target_id is not None
+            else str(existing.get("target_id") or "")
+        ),
+        "title": (
+            str(title).strip()[:64]
+            if title is not None and str(title).strip()
+            else str(existing.get("title") or "")
+        ),
+        "created_at": float(existing.get("created_at") or now),
+        "updated_at": now,
+        "messages": serialize_messages(messages),
+    }
+
+
+def _compose_run_record(
+    existing: dict,
+    *,
+    run_id: str,
+    session_id: str,
+    owner_id: str,
+    source: str,
+    status: str,
+    phase: str,
+    user_message: str,
+    messages: list,
+    safe_to_resume: bool,
+    active_tool: str,
+    interruption_reason: str,
+    now: float,
+) -> dict:
+    """Build a run record from the previous state of the active read path."""
+    terminal = status in TERMINAL_RUN_STATUSES
+    return {
+        "run_id": str(run_id),
+        "session_id": str(session_id),
+        "owner_id": str(owner_id or ""),
+        "source": str(source or "chat"),
+        "status": str(status or RUN_STATUS_RUNNING),
+        "phase": str(phase or "model"),
+        "user_message": str(user_message or ""),
+        "messages": serialize_messages(messages),
+        "safe_to_resume": bool(safe_to_resume),
+        "active_tool": str(active_tool or ""),
+        "interruption_reason": str(interruption_reason or ""),
+        "resume_count": int(existing.get("resume_count") or 0),
+        "created_at": float(existing.get("created_at") or now),
+        "updated_at": now,
+        "finished_at": now if terminal else None,
+    }
+
+
 class RecoveryStore:
     """JSON-backed session and run state with atomic writes."""
 
@@ -150,6 +226,22 @@ class RecoveryStore:
         return value if isinstance(value, dict) else None
 
     def get_session(self, session_id: str) -> dict | None:
+        used_postgres, record = pg_read(
+            "sessions",
+            lambda: session_repo.fetch_session(session_id),
+        )
+        if used_postgres:
+            shadow_compare(
+                "sessions",
+                str(session_id or ""),
+                postgres_value=record,
+                json_reader=lambda: self._local_get_session(session_id),
+            )
+            return record
+
+        return self._local_get_session(session_id)
+
+    def _local_get_session(self, session_id: str) -> dict | None:
         path = self._session_path(session_id)
         lock = get_path_lock(path)
         with lock:
@@ -170,33 +262,30 @@ class RecoveryStore:
         status: str = "active",
         target_id: str | None = None,
         title: str | None = None,
+        ttl_seconds: float | None = None,
     ) -> dict:
         if not str(session_id or "").strip():
             raise ValueError("session_id is required")
+        now = time.time()
         path = self._session_path(session_id)
         lock = get_path_lock(path)
-        now = time.time()
         with lock:
             existing = self._read_json(path) or {}
-            record = {
-                "session_id": str(session_id),
-                "owner_id": str(owner_id or existing.get("owner_id") or ""),
-                "status": str(status or "active"),
-                "target_id": (
-                    str(target_id)
-                    if target_id is not None
-                    else str(existing.get("target_id") or "")
-                ),
-                "title": (
-                    str(title).strip()[:64]
-                    if title is not None and str(title).strip()
-                    else str(existing.get("title") or "")
-                ),
-                "created_at": float(existing.get("created_at") or now),
-                "updated_at": now,
-                "messages": serialize_messages(messages),
-            }
+            record = _compose_session_record(
+                existing,
+                session_id=session_id,
+                owner_id=owner_id,
+                messages=messages,
+                status=status,
+                target_id=target_id,
+                title=title,
+                now=now,
+            )
             atomic_write_json(path, record)
+        persistence_writer.persist_session(
+            record,
+            ttl_seconds=ttl_seconds or DEFAULT_SESSION_TTL_SECONDS,
+        )
         return {
             **record,
             "messages": deserialize_messages(record["messages"]),
@@ -215,6 +304,7 @@ class RecoveryStore:
                 return None
             record["title"] = clean
             atomic_write_json(path, record)
+        persistence_writer.rename_session(session_id, clean)
         return record
 
     def reset_session(self, session_id: str) -> None:
@@ -223,6 +313,7 @@ class RecoveryStore:
         with lock:
             if path.exists():
                 path.unlink()
+        persistence_writer.delete_session(session_id)
 
     def list_sessions(
         self,
@@ -230,6 +321,16 @@ class RecoveryStore:
         owner_id: str | None = None,
         light: bool = False,
     ) -> list[dict]:
+        used_postgres, records = pg_read(
+            "sessions",
+            lambda: session_repo.fetch_sessions(
+                owner_id=owner_id,
+                include_messages=not light,
+            ),
+        )
+        if used_postgres:
+            return list(records or [])
+
         if not self.sessions_dir.exists():
             return []
         records = []
@@ -302,36 +403,50 @@ class RecoveryStore:
     ) -> dict:
         if not str(run_id or "").strip():
             raise ValueError("run_id is required")
+        now = time.time()
         path = self._run_path(run_id)
         lock = get_path_lock(path)
-        now = time.time()
         with lock:
             existing = self._read_json(path) or {}
-            terminal = status in TERMINAL_RUN_STATUSES
-            record = {
-                "run_id": str(run_id),
-                "session_id": str(session_id),
-                "owner_id": str(owner_id or ""),
-                "source": str(source or "chat"),
-                "status": str(status or RUN_STATUS_RUNNING),
-                "phase": str(phase or "model"),
-                "user_message": str(user_message or ""),
-                "messages": serialize_messages(messages),
-                "safe_to_resume": bool(safe_to_resume),
-                "active_tool": str(active_tool or ""),
-                "interruption_reason": str(interruption_reason or ""),
-                "resume_count": int(existing.get("resume_count") or 0),
-                "created_at": float(existing.get("created_at") or now),
-                "updated_at": now,
-                "finished_at": now if terminal else None,
-            }
+            record = _compose_run_record(
+                existing,
+                run_id=run_id,
+                session_id=session_id,
+                owner_id=owner_id,
+                source=source,
+                status=status,
+                phase=phase,
+                user_message=user_message,
+                messages=messages,
+                safe_to_resume=safe_to_resume,
+                active_tool=active_tool,
+                interruption_reason=interruption_reason,
+                now=now,
+            )
             atomic_write_json(path, record)
+        persistence_writer.persist_run(record)
         return {
             **record,
             "messages": deserialize_messages(record["messages"]),
         }
 
     def get_run(self, run_id: str) -> dict | None:
+        used_postgres, record = pg_read(
+            "runs",
+            lambda: run_repo.fetch_run(run_id),
+        )
+        if used_postgres:
+            shadow_compare(
+                "runs",
+                str(run_id or ""),
+                postgres_value=record,
+                json_reader=lambda: self._local_get_run(run_id),
+            )
+            return record
+
+        return self._local_get_run(run_id)
+
+    def _local_get_run(self, run_id: str) -> dict | None:
         path = self._run_path(run_id)
         lock = get_path_lock(path)
         with lock:
@@ -351,7 +466,32 @@ class RecoveryStore:
         status: str | None = None,
         statuses: set[str] | None = None,
         limit: int = 100,
+        include_messages: bool = False,
     ) -> list[dict]:
+        used_postgres, records = pg_read(
+            "runs",
+            lambda: run_repo.fetch_runs(
+                owner_id=owner_id,
+                session_id=session_id,
+                status=status,
+                statuses=statuses,
+                limit=limit,
+            ),
+        )
+        if used_postgres:
+            runs = list(records or [])
+            if include_messages:
+                for run in runs:
+                    stored = run_repo.fetch_run(
+                        str(run.get("run_id") or ""),
+                    )
+                    run["messages"] = (
+                        list(stored.get("messages") or [])
+                        if stored
+                        else []
+                    )
+            return runs
+
         if not self.runs_dir.exists():
             return []
         records = []
@@ -377,7 +517,12 @@ class RecoveryStore:
                 **record,
                 "message_count": len(record.get("messages") or []),
             }
-            entry.pop("messages", None)
+            if include_messages:
+                entry["messages"] = deserialize_messages(
+                    record.get("messages")
+                )
+            else:
+                entry.pop("messages", None)
             records.append(entry)
         records.sort(
             key=lambda item: (
@@ -434,6 +579,8 @@ class RecoveryStore:
                 **record,
                 "messages": deserialize_messages(record.get("messages")),
             })
+        if interrupted:
+            persistence_writer.interrupt_stale_runs(str(reason))
         return interrupted
 
 

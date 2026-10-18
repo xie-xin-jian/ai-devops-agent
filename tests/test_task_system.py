@@ -160,3 +160,31 @@ async def test_task_api_preserves_priority(isolated_tasks_dir):
     assert response["created_at"] > 0
     assert response["updated_at"] > 0
     assert load_task(response["id"]).priority == "high"
+
+
+def test_task_transition_survives_unprintable_console(
+    isolated_tasks_dir,
+    monkeypatch,
+):
+    """状态打印不能因为控制台编码让任务流转失败。
+
+    Windows 控制台默认 GBK 时，``print`` 里的 ``✓`` / ``→`` 会抛
+    UnicodeEncodeError；这曾让 claim_task 直接中断。
+    """
+
+    class BrokenStdout:
+        def write(self, _text):
+            raise UnicodeEncodeError("gbk", "x", 0, 1, "illegal multibyte sequence")
+
+        def flush(self):
+            return None
+
+    monkeypatch.setattr("sys.stdout", BrokenStdout())
+
+    task = create_task("console safety")
+    claimed = claim_task(task.id)
+    completed = complete_task(task.id, result="done")
+
+    assert claimed.startswith("Claimed")
+    assert completed.startswith("Completed")
+    assert load_task(task.id).status == "completed"
