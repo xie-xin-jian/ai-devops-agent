@@ -25,9 +25,7 @@ def _configure_roots(monkeypatch, root: Path) -> None:
 
 
 def _store(tmp_path: Path, monkeypatch) -> TargetStore:
-    path = tmp_path / "targets.json"
-    monkeypatch.setattr("agent.targets.store.TARGETS_PATH", path)
-    return TargetStore(path)
+    return TargetStore()
 
 
 def test_target_store_crud_and_browser(tmp_path, monkeypatch):

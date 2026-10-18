@@ -3,14 +3,8 @@ import time
 import random
 import threading
 from dataclasses import dataclass, asdict, field
-from pathlib import Path
-from agent.persistence import writer as persistence_writer
-from agent.persistence.routing import pg_read, shadow_compare
 from agent.persistence.repositories import tasks as task_repo
-from agent.platform.config import TASKS_DIR
-from agent.platform.storage import atomic_write_json
 
-TASKS_DIR.mkdir(parents=True, exist_ok=True)
 VALID_PRIORITIES = {"low", "medium", "high"}
 _tasks_lock = threading.RLock()
 
@@ -45,12 +39,8 @@ class Task:
     result: str = ""
 
 
-def _task_path(task_id: str) -> Path:
-    return TASKS_DIR / f"{task_id}.json"
-
-
 def _task_from_dict(data: dict) -> Task:
-    """兼容旧任务文件，缺失的新字段使用默认值。"""
+    """Normalize one repository record."""
     created_at = data.get("created_at") or time.time()
     priority = data.get("priority", "medium")
     if priority not in VALID_PRIORITIES:
@@ -100,84 +90,34 @@ def create_task(subject: str, description: str = "",
 def save_task(task: Task):
     with _tasks_lock:
         task.updated_at = time.time()
-        atomic_write_json(_task_path(task.id), asdict(task))
-        persistence_writer.persist_task(asdict(task))
+        if not task_repo.upsert_task(asdict(task), force=True):
+            raise RuntimeError(f"Failed to save task {task.id}")
 
 
 def delete_task(task_id: str) -> None:
-    """Remove a task file and its mirror row."""
-    path = _task_path(task_id)
+    """Remove a task and its dependency edges."""
     with _tasks_lock:
-        if not path.exists():
+        if not task_repo.delete_task(task_id):
             raise FileNotFoundError(task_id)
-        path.unlink()
-    persistence_writer.delete_task(task_id)
 
 
 def load_task(task_id: str) -> Task:
-    used_postgres, record = pg_read(
-        "tasks",
-        lambda: task_repo.fetch_task(task_id),
-    )
-    if used_postgres:
-        task = _task_from_dict(record) if record is not None else None
-        shadow_compare(
-            "tasks",
-            str(task_id or ""),
-            postgres_value=task,
-            json_reader=lambda: _local_load_task(task_id),
-        )
-        if task is None:
-            raise FileNotFoundError(task_id)
-        return task
-
-    return _local_load_task(task_id)
-
-
-def _local_load_task(task_id: str) -> Task:
-    with _tasks_lock:
-        data = json.loads(_task_path(task_id).read_text(encoding="utf-8"))
-        return _task_from_dict(data)
+    record = task_repo.fetch_task(task_id)
+    if record is None:
+        raise FileNotFoundError(task_id)
+    return _task_from_dict(record)
 
 
 def list_tasks() -> list[Task]:
-    used_postgres, records = pg_read(
-        "tasks",
-        lambda: task_repo.fetch_tasks(),
-    )
-    if used_postgres:
-        return [_task_from_dict(item) for item in records or []]
-
-    with _tasks_lock:
-        return [
-            _task_from_dict(json.loads(p.read_text(encoding="utf-8")))
-            for p in sorted(TASKS_DIR.glob("task_*.json"))
-        ]
+    return [
+        _task_from_dict(item)
+        for item in task_repo.fetch_tasks()
+    ]
 
 
 def _task_exists(task_id: str) -> bool:
-    """Whether a task record exists on the active read path."""
-    used_postgres, record = pg_read(
-        "tasks",
-        lambda: task_repo.fetch_task(task_id),
-    )
-    if used_postgres:
-        exists = record is not None
-        shadow_compare(
-            "tasks",
-            str(task_id or ""),
-            postgres_value=(_task_from_dict(record) if exists else None),
-            json_reader=lambda: _local_task_or_none(task_id),
-        )
-        return exists
-    return _task_path(task_id).exists()
-
-
-def _local_task_or_none(task_id: str) -> Task | None:
-    try:
-        return _local_load_task(task_id)
-    except (FileNotFoundError, OSError, ValueError):
-        return None
+    """Whether a task record exists."""
+    return task_repo.fetch_task(task_id) is not None
 
 
 def get_task_json(task_id: str) -> str:

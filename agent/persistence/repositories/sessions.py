@@ -287,7 +287,7 @@ def fetch_sessions(
 ) -> list[dict]:
     statement = select(SessionRecord)
     if owner_id:
-        # Matches the local store: sessions without an owner stay visible.
+        # Sessions without an owner stay visible.
         statement = statement.where(
             or_(
                 SessionRecord.owner_id == str(owner_id),

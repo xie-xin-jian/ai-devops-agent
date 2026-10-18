@@ -28,9 +28,7 @@ def _make_agent(tmp_path, monkeypatch):
     agent.session_id = "session-1"
     agent.principal = system_admin_principal()
     agent.tool_context = ToolPolicyContext()
-    agent.pending_action_store = PendingActionStore(
-        tmp_path / "actions.json"
-    )
+    agent.pending_action_store = PendingActionStore()
     agent._last_user_query = "test request"
     agent.audit_enabled = False
     agent.current_run_id = "run-test"
@@ -46,7 +44,7 @@ def _make_agent(tmp_path, monkeypatch):
 
 
 def test_pending_action_store_lifecycle(tmp_path):
-    store = PendingActionStore(tmp_path / "actions.json")
+    store = PendingActionStore()
     record = store.create_tool_call(
         "bash",
         {"command": "echo hello"},
@@ -77,7 +75,7 @@ def test_pending_action_store_lifecycle(tmp_path):
 
 
 def test_pending_action_store_rejects_invalid_transition(tmp_path):
-    store = PendingActionStore(tmp_path / "actions.json")
+    store = PendingActionStore()
     record = store.create_tool_call(
         "bash",
         {"command": "echo hello"},
@@ -90,7 +88,7 @@ def test_pending_action_store_rejects_invalid_transition(tmp_path):
 
 
 def test_pending_action_recovery_fails_confirmed_action(tmp_path):
-    store = PendingActionStore(tmp_path / "actions.json")
+    store = PendingActionStore()
     record = store.create_tool_call(
         "bash",
         {"command": "echo hello"},
@@ -189,6 +187,131 @@ def test_agent_stream_emits_pending_action_event(tmp_path, monkeypatch):
     assert agent.pending_action_store.list()[0].status == "pending"
 
 
+def test_pending_action_is_registered_before_event_is_yielded(
+    tmp_path,
+    monkeypatch,
+):
+    agent = _make_agent(tmp_path, monkeypatch)
+    agent.client = object()
+    agent.model = "test-model"
+    agent.recovery = SimpleNamespace(current_model="test-model")
+    agent.messages = []
+    agent._pending_compaction = False
+
+    tool_use = SimpleNamespace(
+        type="tool_use",
+        name="bash",
+        id="call_bash",
+        input={"command": "echo hello"},
+    )
+    final = SimpleNamespace(type="text", text="done")
+    responses = iter([
+        SimpleNamespace(content=[tool_use]),
+        SimpleNamespace(content=[final]),
+    ])
+    monkeypatch.setattr(pipeline, "collect_background_results", lambda: [])
+    monkeypatch.setattr(agent, "_compact_if_needed", lambda messages: messages)
+    monkeypatch.setattr(agent, "_call_api", lambda messages: next(responses))
+    monkeypatch.setattr(
+        agent,
+        "_await_tool_approval",
+        lambda record, cancel_event=None: "approved output",
+    )
+
+    stream = agent.run_stream("echo hello")
+    pending = next(
+        event for event in stream
+        if event.get("type") == "pending_action"
+    )
+    action_id = pending["pending_action"]["id"]
+
+    assert approval_coordinator.resolve(
+        action_id,
+        approved=True,
+        actor="test",
+    )
+    approval_coordinator.clear(action_id)
+    stream.close()
+
+
+def test_closing_stream_clears_unresolved_approval_waiter(
+    tmp_path,
+    monkeypatch,
+):
+    agent = _make_agent(tmp_path, monkeypatch)
+    agent.client = object()
+    agent.model = "test-model"
+    agent.recovery = SimpleNamespace(current_model="test-model")
+    agent.messages = []
+    agent._pending_compaction = False
+    tool_use = SimpleNamespace(
+        type="tool_use",
+        name="bash",
+        id="call_bash",
+        input={"command": "echo hello"},
+    )
+    monkeypatch.setattr(pipeline, "collect_background_results", lambda: [])
+    monkeypatch.setattr(agent, "_compact_if_needed", lambda messages: messages)
+    monkeypatch.setattr(
+        agent,
+        "_call_api",
+        lambda messages: SimpleNamespace(content=[tool_use]),
+    )
+
+    stream = agent.run_stream("echo hello")
+    pending = next(
+        event for event in stream
+        if event.get("type") == "pending_action"
+    )
+    action_id = pending["pending_action"]["id"]
+    stream.close()
+
+    assert not approval_coordinator.resolve(
+        action_id,
+        approved=True,
+        actor="test",
+    )
+
+
+def test_programmatic_approval_confirms_action_before_finish(
+    tmp_path,
+    monkeypatch,
+):
+    agent = _make_agent(tmp_path, monkeypatch)
+    record = agent.pending_action_store.create_tool_call(
+        "bash",
+        {"command": "echo hello"},
+        session_id="session-1",
+        run_id="run-test",
+    )
+    observed_status = []
+    from agent.orchestration import pending_executor
+
+    def fake_execute(action, principal):
+        observed_status.append(agent.pending_action_store.get(action.id).status)
+        return {
+            "execution_enabled": True,
+            "success": True,
+            "summary": "hello",
+        }
+
+    monkeypatch.setattr(
+        pending_executor,
+        "execute_pending_action",
+        fake_execute,
+    )
+    approval_coordinator.register(record.id)
+    approval_coordinator.resolve(
+        record.id,
+        approved=True,
+        actor="evaluation-runner",
+    )
+
+    assert agent._await_tool_approval(record) == "hello"
+    assert observed_status == [STATUS_CONFIRMED]
+    assert agent.pending_action_store.get(record.id).status == STATUS_EXECUTED
+
+
 def test_execute_pending_action_runs_bash_on_host(monkeypatch):
     from agent.tools import executor as executor_module
     from agent.orchestration import pending_executor as pending_action_executor
@@ -267,12 +390,7 @@ def test_pending_action_api_executes_and_cancels(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from api.routes import action_route
 
-    store_path = tmp_path / "api-actions.json"
-    monkeypatch.setattr(
-        "agent.orchestration.pending_actions.PENDING_ACTIONS_PATH",
-        store_path,
-    )
-    store = PendingActionStore(store_path)
+    store = PendingActionStore()
     executable = store.create_tool_call(
         "bash",
         {"command": "echo hello"},
@@ -334,12 +452,7 @@ def test_active_approval_api_wakes_waiter_without_executing_twice(
     from fastapi.testclient import TestClient
     from api.routes import action_route
 
-    store_path = tmp_path / "active-actions.json"
-    monkeypatch.setattr(
-        "agent.orchestration.pending_actions.PENDING_ACTIONS_PATH",
-        store_path,
-    )
-    store = PendingActionStore(store_path)
+    store = PendingActionStore()
     action = store.create_tool_call(
         "bash",
         {"command": "echo active"},

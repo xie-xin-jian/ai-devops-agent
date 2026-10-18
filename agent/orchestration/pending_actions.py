@@ -2,21 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 
-from agent.persistence import writer as persistence_writer
-from agent.persistence.routing import pg_read, shadow_compare
 from agent.persistence.repositories import actions as action_repo
-from agent.platform.config import DATA_DIR
-from agent.platform.storage import atomic_write_text, get_path_lock
 from agent.tools.policy import get_tool_policy
 
-
-PENDING_ACTIONS_PATH = DATA_DIR / ".pending_actions" / "actions.json"
 
 STATUS_PENDING = "pending"
 STATUS_CONFIRMED = "confirmed"
@@ -117,32 +109,7 @@ class PendingAction:
 
 
 class PendingActionStore:
-    """JSON-backed pending-action store with atomic writes."""
-
-    def __init__(self, path: str | Path | None = None):
-        self.path = Path(path or PENDING_ACTIONS_PATH)
-        self._lock = get_path_lock(self.path)
-
-    def _load_unlocked(self) -> dict[str, dict]:
-        if not self.path.exists():
-            return {}
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError):
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        return {
-            str(action_id): value
-            for action_id, value in data.items()
-            if isinstance(value, dict)
-        }
-
-    def _save_unlocked(self, records: dict[str, dict]) -> None:
-        atomic_write_text(
-            self.path,
-            json.dumps(records, ensure_ascii=False, indent=2),
-        )
+    """Database-backed pending-action store."""
 
     def create_tool_call(
         self,
@@ -195,34 +162,13 @@ class PendingActionStore:
             created_at=now,
             updated_at=now,
         )
-        with self._lock:
-            records = self._load_unlocked()
-            records[action_id] = record.to_dict()
-            self._save_unlocked(records)
-        persistence_writer.persist_action(record.to_dict())
+        if not action_repo.upsert_action(record.to_dict(), force=True):
+            raise RuntimeError("Failed to create pending action")
         return record
 
     def get(self, action_id: str) -> PendingAction | None:
-        used_postgres, record = pg_read(
-            "actions",
-            lambda: action_repo.fetch_action(action_id),
-        )
-        if used_postgres:
-            action = PendingAction.from_dict(record) if record else None
-            shadow_compare(
-                "actions",
-                str(action_id or ""),
-                postgres_value=action,
-                json_reader=lambda: self._local_get(action_id),
-            )
-            return action
-
-        return self._local_get(action_id)
-
-    def _local_get(self, action_id: str) -> PendingAction | None:
-        with self._lock:
-            data = self._load_unlocked().get(str(action_id))
-        return PendingAction.from_dict(data) if data else None
+        record = action_repo.fetch_action(action_id)
+        return PendingAction.from_dict(record) if record else None
 
     def list(
         self,
@@ -231,54 +177,15 @@ class PendingActionStore:
         status: str | None = None,
         limit: int = 0,
     ) -> list[PendingAction]:
-        """List actions newest-first.
-
-        Filtering and sorting happen on the raw dicts so that only the
-        returned slice is deserialized into dataclasses (the file holds
-        full payloads and grows with history).
-        """
-        used_postgres, records = pg_read(
-            "actions",
-            lambda: action_repo.fetch_actions(
-                session_id=session_id,
-                status=status,
-                limit=limit,
-            ),
+        """List actions newest-first."""
+        records = action_repo.fetch_actions(
+            session_id=session_id,
+            status=status,
+            limit=limit,
         )
-        if used_postgres:
-            return [
-                PendingAction.from_dict(item)
-                for item in records or []
-            ]
-
-        with self._lock:
-            records = list(self._load_unlocked().values())
-        if session_id:
-            records = [
-                item for item in records
-                if isinstance(item, dict)
-                and item.get("session_id") == session_id
-            ]
-        if status:
-            records = [
-                item for item in records
-                if isinstance(item, dict)
-                and item.get("status") == status
-            ]
-        records.sort(
-            key=lambda item: (
-                float(item.get("created_at") or 0)
-                if isinstance(item, dict) else 0.0,
-                str(item.get("id") or "") if isinstance(item, dict) else "",
-            ),
-            reverse=True,
-        )
-        if limit and limit > 0:
-            records = records[: int(limit)]
         return [
             PendingAction.from_dict(item)
             for item in records
-            if isinstance(item, dict)
         ]
 
     def confirm(
@@ -287,20 +194,16 @@ class PendingActionStore:
         *,
         actor: str = "api-user",
     ) -> PendingAction:
-        with self._lock:
-            records = self._load_unlocked()
-            data = records.get(str(action_id))
-            if data is None:
-                raise KeyError(action_id)
-            record = self._apply_confirm(
-                PendingAction.from_dict(data),
-                action_id,
-                actor,
+        current = self.get(action_id)
+        if current is None:
+            raise KeyError(action_id)
+        record = self._apply_confirm(current, action_id, actor)
+        updated = action_repo.confirm_action(action_id, record.to_dict())
+        if updated is None:
+            raise ValueError(
+                f"Pending action {action_id} is {current.status}"
             )
-            records[action_id] = record.to_dict()
-            self._save_unlocked(records)
-        persistence_writer.confirm_action(action_id, record.to_dict())
-        return record
+        return PendingAction.from_dict(updated)
 
     @staticmethod
     def _apply_confirm(
@@ -334,21 +237,16 @@ class PendingActionStore:
         actor: str = "api-user",
         reason: str = "",
     ) -> PendingAction:
-        with self._lock:
-            records = self._load_unlocked()
-            data = records.get(str(action_id))
-            if data is None:
-                raise KeyError(action_id)
-            record = self._apply_cancel(
-                PendingAction.from_dict(data),
-                action_id,
-                actor,
-                reason,
+        current = self.get(action_id)
+        if current is None:
+            raise KeyError(action_id)
+        record = self._apply_cancel(current, action_id, actor, reason)
+        updated = action_repo.cancel_action(action_id, record.to_dict())
+        if updated is None:
+            raise ValueError(
+                f"Pending action {action_id} is {current.status}"
             )
-            records[action_id] = record.to_dict()
-            self._save_unlocked(records)
-        persistence_writer.cancel_action(action_id, record.to_dict())
-        return record
+        return PendingAction.from_dict(updated)
 
     @staticmethod
     def _apply_cancel(
@@ -378,21 +276,21 @@ class PendingActionStore:
     ) -> PendingAction:
         if status not in {STATUS_EXECUTED, STATUS_FAILED}:
             raise ValueError(f"Invalid terminal status: {status}")
-        with self._lock:
-            records = self._load_unlocked()
-            data = records.get(str(action_id))
-            if data is None:
-                raise KeyError(action_id)
-            record = self._apply_finish(
-                PendingAction.from_dict(data),
-                action_id,
-                status,
-                result_payload,
+        current = self.get(action_id)
+        if current is None:
+            raise KeyError(action_id)
+        record = self._apply_finish(
+            current,
+            action_id,
+            status,
+            result_payload,
+        )
+        updated = action_repo.finish_action(action_id, record.to_dict())
+        if updated is None:
+            raise ValueError(
+                f"Pending action {action_id} is {current.status}"
             )
-            records[action_id] = record.to_dict()
-            self._save_unlocked(records)
-        persistence_writer.finish_action(action_id, record.to_dict())
-        return record
+        return PendingAction.from_dict(updated)
 
     @staticmethod
     def _apply_finish(
@@ -412,34 +310,19 @@ class PendingActionStore:
 
     def recover_interrupted(self, reason: str) -> list[PendingAction]:
         """Fail confirmed actions that never reached a terminal state."""
+        candidates = self.list(status=STATUS_CONFIRMED)
+        if not candidates:
+            return []
+        action_repo.recover_interrupted_actions(str(reason))
         recovered = []
-        with self._lock:
-            records = self._load_unlocked()
-            changed = False
-            for action_id, data in records.items():
-                record = PendingAction.from_dict(data)
-                if record.status != STATUS_CONFIRMED:
-                    continue
-                record.status = STATUS_FAILED
-                record.result_payload = {
-                    "execution_enabled": True,
-                    "success": False,
-                    "error": str(reason),
-                    "interrupted": True,
-                }
-                record.updated_at = time.time()
-                records[action_id] = record.to_dict()
-                changed = True
+        for candidate in candidates:
+            record = self.get(candidate.id)
+            if record is not None:
                 recovered.append(record)
-            if changed:
-                self._save_unlocked(records)
-        if recovered:
-            persistence_writer.recover_interrupted_actions(str(reason))
         return recovered
 
 
 __all__ = [
-    "PENDING_ACTIONS_PATH",
     "PendingAction",
     "PendingActionStore",
     "STATUS_CANCELED",

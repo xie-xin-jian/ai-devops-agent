@@ -82,9 +82,7 @@ def _make_agent(tmp_path, manager):
     agent.session_id = "session-agent"
     agent.target_id = ""
     agent.principal = system_admin_principal()
-    agent.pending_action_store = PendingActionStore(
-        tmp_path / "agent-actions.json"
-    )
+    agent.pending_action_store = PendingActionStore()
     agent._last_user_query = "echo approved"
     agent.tool_context = None
     agent.audit_enabled = False

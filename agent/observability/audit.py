@@ -2,23 +2,14 @@
 
 from __future__ import annotations
 
-import json
-import os
 import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any
 
-import agent.platform.config as config
-from agent.platform.config import AUDIT_DIR
-from agent.persistence import writer as persistence_writer
+from agent.persistence.repositories import audit as audit_repo
 from agent.observability.logger import logger
-from agent.platform.storage import get_path_lock
-
-
-AUDIT_EVENTS_PATH = AUDIT_DIR / "events.jsonl"
 
 RESULT_SUCCESS = "success"
 RESULT_FAILED = "failed"
@@ -113,55 +104,11 @@ class AuditEvent:
 
 
 class AuditStore:
-    """Thread-safe append-only event store with simple filtered reads."""
-
-    def __init__(self, path: str | Path | None = None):
-        self.path = Path(path or AUDIT_EVENTS_PATH)
-        self._lock = get_path_lock(self.path)
+    """Append-only audit event store backed by the database."""
 
     def append(self, event: AuditEvent) -> None:
-        payload = json.dumps(
-            _redact_value(event.to_dict()),
-            ensure_ascii=False,
-            default=str,
-        )
-        with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8", newline="") as handle:
-                handle.write(payload + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-
-    def _iter_lines_reverse(self):
-        """Yield raw event lines newest-first with bounded reads.
-
-        Audit files grow unboundedly; parsing every line on each listing
-        made the audit page slow. Reading tail chunks backwards lets us
-        stop as soon as ``limit`` matching events are collected.
-        """
-        if not self.path.exists():
-            return
-        with self._lock:
-            try:
-                with open(self.path, "rb") as handle:
-                    handle.seek(0, os.SEEK_END)
-                    position = handle.tell()
-                    buffer = b""
-                    chunk = 65536
-                    while position > 0:
-                        step = min(chunk, position)
-                        position -= step
-                        handle.seek(position)
-                        buffer = handle.read(step) + buffer
-                        lines = buffer.split(b"\n")
-                        buffer = lines.pop(0)
-                        for raw in reversed(lines):
-                            if raw.strip():
-                                yield raw
-                    if buffer.strip():
-                        yield buffer
-            except OSError:
-                return
+        if not audit_repo.persist_audit_event(event):
+            raise RuntimeError("Failed to persist audit event")
 
     def list_events(
         self,
@@ -172,34 +119,16 @@ class AuditStore:
         event_type: str | None = None,
         limit: int = 200,
     ) -> list[AuditEvent]:
-        limit = max(1, min(int(limit), 1000))
-        events = []
-        for raw_line in self._iter_lines_reverse():
-            try:
-                event = AuditEvent.from_dict(json.loads(raw_line))
-            except (
-                json.JSONDecodeError,
-                TypeError,
-                ValueError,
-                UnicodeDecodeError,
-            ):
-                continue
-            if session_id and event.session_id != session_id:
-                continue
-            if run_id and event.run_id != run_id:
-                continue
-            if action_id and event.action_id != action_id:
-                continue
-            if event_type and event.event_type != event_type:
-                continue
-            events.append(event)
-            if len(events) >= limit:
-                break
-        events.sort(
-            key=lambda item: (item.occurred_at, item.id),
-            reverse=True,
-        )
-        return events
+        return [
+            AuditEvent.from_dict(item)
+            for item in audit_repo.fetch_audit_events(
+                session_id=session_id,
+                run_id=run_id,
+                action_id=action_id,
+                event_type=event_type,
+                limit=limit,
+            )
+        ]
 
     def get_run_trace(self, run_id: str) -> list[AuditEvent]:
         events = self.list_events(run_id=run_id, limit=1000)
@@ -244,23 +173,15 @@ def record_event(
         payload=_redact_value(payload or {}),
         metadata=_redact_value(metadata or {}),
     )
-    backend = config.PERSISTENCE_BACKEND
     stored = False
-    if backend in {"json", "dual"}:
-        try:
-            AuditStore().append(event)
-            stored = True
-        except Exception:
-            logger.exception("Failed to persist audit event: %s", event_type)
-    if backend == "dual":
-        stored = persistence_writer.persist_audit_event(event) or stored
-    elif backend == "postgres":
-        stored = persistence_writer.persist_audit_event(event)
+    try:
+        stored = audit_repo.persist_audit_event(event)
+    except Exception:
+        logger.exception("Failed to persist audit event: %s", event_type)
     return event if stored else None
 
 
 __all__ = [
-    "AUDIT_EVENTS_PATH",
     "AuditEvent",
     "AuditStore",
     "RESULT_BLOCKED",

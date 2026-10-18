@@ -18,28 +18,20 @@ def _memory_agent(
     principal,
     *,
     memory_scope,
-    audit_path=None,
 ):
-    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     agent = object.__new__(comprehensive.ComprehensiveAgent)
     agent.memory = memory.MemorySystem()
     agent.memory_scope = memory_scope
     agent.principal = principal
     agent.session_id = "session-1"
     agent.current_run_id = "run-1"
-    agent.audit_enabled = audit_path is not None
+    agent.audit_enabled = True
     agent.tool_registry = ToolRegistry.builtin()
     agent._add_memory_tools()
-    if audit_path is not None:
-        monkeypatch.setattr(
-            "agent.observability.audit.AUDIT_EVENTS_PATH",
-            audit_path,
-        )
     return agent
 
 
 def test_memory_record_persists_owner_session_and_run(tmp_path, monkeypatch):
-    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
 
     record = system.add(
@@ -147,13 +139,11 @@ def test_developer_cannot_manage_another_owners_memory(
 
 def test_candidate_approval_and_audit(tmp_path, monkeypatch):
     admin = principal_from_roles("admin", {"platform-admin"})
-    audit_path = tmp_path / "audit.jsonl"
     agent = _memory_agent(
         tmp_path,
         monkeypatch,
         admin,
         memory_scope="global",
-        audit_path=audit_path,
     )
     monkeypatch.setattr("agent.memory.lifecycle.MEMORY_NEAR_DUP_THRESHOLD", 0.60)
     monkeypatch.setattr("agent.memory.lifecycle.MEMORY_AUTO_MERGE_THRESHOLD", 0.99)
@@ -175,7 +165,7 @@ def test_candidate_approval_and_audit(tmp_path, monkeypatch):
     assert agent.memory.get(candidate["id"])["status"] == "active"
     event_types = {
         event.event_type
-        for event in AuditStore(audit_path).list_events()
+        for event in AuditStore().list_events()
     }
     assert "memory.candidate_created" in event_types
     assert "memory.approved" in event_types
@@ -188,11 +178,6 @@ def test_memory_api_filters_scopes_and_approves_candidate(
     from fastapi.testclient import TestClient
     from api.main import app
 
-    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
-    monkeypatch.setattr(
-        "agent.observability.audit.AUDIT_EVENTS_PATH",
-        tmp_path / "audit.jsonl",
-    )
     monkeypatch.setattr(config, "API_AUTH_TOKEN", "developer-token")
     monkeypatch.setattr(config, "API_AUTH_USER", "alice")
     monkeypatch.setattr(config, "API_AUTH_ROLES", ["developer"])

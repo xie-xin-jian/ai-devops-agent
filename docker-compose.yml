@@ -17,15 +17,13 @@ services:
       - ENABLE_UNSAFE_MCP_SHELL=${ENABLE_UNSAFE_MCP_SHELL:-0}
       - ENABLE_MOCK_MCP=${ENABLE_MOCK_MCP:-0}
       - TARGET_BROWSE_ROOTS=${TARGET_BROWSE_ROOTS:-/opt,/srv}
-      - PERSISTENCE_BACKEND=${PERSISTENCE_BACKEND:-json}
       - DATABASE_URL=${DATABASE_URL:-postgresql+psycopg://ai_devops:change-me@postgres:5432/ai_devops}
-      - DB_AUTO_MIGRATE=${DB_AUTO_MIGRATE:-0}
       - DB_POOL_SIZE=${DB_POOL_SIZE:-5}
       - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW:-10}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:8000,http://127.0.0.1:5173,http://127.0.0.1:8000}
     volumes:
       - .:/app
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    command: sh -c "alembic upgrade head && uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload"
 
   postgres:
     image: postgres:16-alpine

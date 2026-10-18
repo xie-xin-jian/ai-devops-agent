@@ -1,15 +1,12 @@
 import time
 import random
 import threading
-import json
 import queue
 import uuid
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Optional
-from agent.persistence import writer as persistence_writer
-from agent.platform.config import CRON_LOG_DIR, DURABLE_CRON_PATH
-from agent.platform.storage import atomic_write_json
+from agent.persistence.repositories import cron as cron_repo
 
 
 @dataclass
@@ -156,26 +153,22 @@ def validate_cron(cron_expr: str) -> bool:
 def save_durable_jobs():
     try:
         with cron_lock:
-            durable = {
-                jid: asdict(job)
-                for jid, job in scheduled_jobs.items()
+            jobs = [
+                asdict(job)
+                for job in scheduled_jobs.values()
                 if job.durable
-            }
-            atomic_write_json(DURABLE_CRON_PATH, durable)
-            jobs = list(durable.values())
-        persistence_writer.persist_cron_jobs(jobs)
+            ]
+        cron_repo.upsert_cron_jobs(jobs, force=True)
     except Exception:
         pass
 
 
 def load_durable_jobs():
     try:
+        records = cron_repo.fetch_cron_jobs()
         with cron_lock:
-            if not DURABLE_CRON_PATH.exists():
-                return
-            with open(DURABLE_CRON_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            for jid, job_data in data.items():
+            for job_data in records:
+                jid = str(job_data.get("id") or "")
                 job = CronJob(
                     id=job_data.get("id", jid),
                     cron=job_data["cron"],
@@ -188,15 +181,6 @@ def load_durable_jobs():
                     created_at=job_data.get("created_at", time.time()),
                 )
                 scheduled_jobs[jid] = job
-            # Mirror on load so a job created before the mirror was enabled
-            # still has a row to claim against.
-            persistence_writer.persist_cron_jobs(
-                [
-                    asdict(job)
-                    for job in scheduled_jobs.values()
-                    if job.durable
-                ]
-            )
     except Exception:
         pass
 
@@ -231,7 +215,8 @@ def schedule_job(
 
     if durable:
         save_durable_jobs()
-    persistence_writer.persist_cron_job(asdict(job))
+    else:
+        cron_repo.upsert_cron_job(asdict(job), force=True)
 
     return job, f"Job {job_id} scheduled"
 
@@ -245,7 +230,7 @@ def cancel_job(job_id: str) -> str:
             return f"Job {job_id} not found"
 
     save_durable_jobs()
-    persistence_writer.delete_cron_job(job_id)
+    cron_repo.delete_cron_job(job_id)
     return f"Job {job_id} cancelled"
 
 
@@ -271,9 +256,7 @@ def _save_cron_run_log(
 ):
     """把 Cron 执行结果落盘，方便用户之后查历史。"""
     try:
-        CRON_LOG_DIR.mkdir(parents=True, exist_ok=True)
         ts = fired_at.strftime("%Y%m%d_%H%M%S")
-        log_path = CRON_LOG_DIR / f"{job.id}__{ts}.json"
         log = {
             "id": f"{job.id}__{ts}",
             "job_id": job.id,
@@ -287,8 +270,7 @@ def _save_cron_run_log(
             "run_id": run_id,
             "session_id": session_id,
         }
-        atomic_write_json(log_path, log)
-        persistence_writer.persist_cron_log(log)
+        cron_repo.upsert_cron_log(log)
     except Exception:
         pass
 
@@ -431,7 +413,7 @@ def cron_scheduler_loop():
         # Durable jobs are claimed in PostgreSQL so that restarts and extra
         # worker processes cannot fire the same job twice. Non-durable jobs
         # only exist in memory, so they keep the process-local gate.
-        claimed = persistence_writer.claim_due_cron_jobs(
+        claimed = cron_repo.claim_due_cron_jobs(
             [job_id for job_id, job in due_jobs if job.durable],
             minute_epoch=now_truncated.timestamp(),
         )
@@ -452,7 +434,7 @@ def cron_scheduler_loop():
                     scheduled_jobs.pop(job_id, None)
                 _last_fired.pop(job_id, None)
                 schedule_changed = True
-                persistence_writer.delete_cron_job(job_id)
+                cron_repo.delete_cron_job(job_id)
 
             if _reserve_job(job_id):
                 _cron_execution_queue.put((job, now_truncated))
@@ -465,20 +447,4 @@ def cron_scheduler_loop():
 
 def list_cron_run_logs(job_id: Optional[str] = None, limit: int = 20) -> list[dict]:
     """查看 Cron 执行历史。不传 job_id 则查所有。"""
-    try:
-        if not CRON_LOG_DIR.exists():
-            return []
-        files = sorted(CRON_LOG_DIR.glob("*.json"), reverse=True)
-        result = []
-        for p in files[:limit]:
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    log = json.load(f)
-                if job_id and log.get("job_id") != job_id:
-                    continue
-                result.append(log)
-            except Exception:
-                pass
-        return result
-    except Exception:
-        return []
+    return cron_repo.fetch_cron_logs(job_id=job_id, limit=limit)

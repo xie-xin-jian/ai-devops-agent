@@ -15,7 +15,6 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent.core.comprehensive import ComprehensiveAgent
-from agent.observability.logger import logger
 from agent.platform.config import WORKDIR, ALLOWED_ORIGINS
 from agent.sessions.manager import (
     SessionAccessError,
@@ -51,7 +50,6 @@ async def lifespan(_app):
     """Start background services as soon as the API process starts."""
     _recover_startup_state()
     _ensure_cron_started()
-    _start_persistence_watcher()
     yield
 
 
@@ -155,16 +153,6 @@ def _ensure_cron_started():
         _cron_started = True
 
 
-def _start_persistence_watcher() -> None:
-    """Start the JSON-vs-PostgreSQL drift checker when the mirror is on."""
-    try:
-        from agent.persistence.consistency import start_consistency_watcher
-
-        start_consistency_watcher()
-    except Exception:
-        logger.exception("Failed to start persistence consistency watcher")
-
-
 def get_or_create_session(
     session_id: str | None = None,
     principal: Principal | None = None,
@@ -196,17 +184,12 @@ async def root():
 
 @app.get("/health")
 async def health():
-    from agent.persistence.routing import read_status
-    from agent.persistence.writer import mirror_stats, persistence_status
+    from agent.persistence.database import persistence_status
 
     return {
         "status": "ok",
         "workdir": str(WORKDIR),
-        "persistence": {
-            **persistence_status(),
-            "mirror": mirror_stats(),
-            **read_status(),
-        },
+        "persistence": persistence_status(),
     }
 
 

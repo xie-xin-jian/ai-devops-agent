@@ -21,9 +21,7 @@ def test_bash_waits_for_approval_before_background_start(
     agent.session_id = "session-bg"
     agent.principal = system_admin_principal()
     agent.tool_context = ToolPolicyContext()
-    agent.pending_action_store = PendingActionStore(
-        tmp_path / "actions.json"
-    )
+    agent.pending_action_store = PendingActionStore()
     agent._last_user_query = "npm install"
     agent.audit_enabled = False
     agent.current_run_id = "run-bg"

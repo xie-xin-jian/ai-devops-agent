@@ -22,7 +22,7 @@ import pytest
 import sqlalchemy
 
 import agent.platform.config as config
-from agent.persistence import database, writer
+from agent.persistence import database
 from agent.persistence.models import (
     BackgroundTaskRecord,
     CronJobRecord,
@@ -88,7 +88,6 @@ def pg(monkeypatch):
         engine.dispose()
         pytest.skip(f"run 'alembic upgrade head' first, missing: {missing}")
 
-    monkeypatch.setattr(config, "PERSISTENCE_BACKEND", "dual")
     monkeypatch.setattr(config, "DATABASE_URL", DATABASE_URL)
     monkeypatch.setattr(database, "_engine", engine)
     monkeypatch.setattr(database, "_session_factory", None)
@@ -288,22 +287,6 @@ def test_memory_mirror_roundtrip(pg):
         assert memory_repo.fetch_memory(memory_ids[0]) is None
     finally:
         _cleanup(pg, memory_ids=memory_ids)
-
-
-def test_writer_reports_postgres_failure(pg, monkeypatch):
-    def explode(*args, **kwargs):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(
-        "agent.persistence.repositories.targets.upsert_target",
-        explode,
-    )
-
-    assert writer.persist_target({
-        "id": "pgtest_unused",
-        "name": "x",
-        "root": "/tmp",
-    }) is False
 
 
 ACTION_TEMPLATE = {
@@ -636,3 +619,94 @@ def test_interrupt_stale_runs_is_idempotent(pg):
         assert run_repo.fetch_run(done_id)["status"] == "completed"
     finally:
         _cleanup(pg, run_ids=[running_id, done_id])
+
+
+def test_high_level_stores_use_postgres_only(pg, tmp_path, monkeypatch):
+    from agent.memory.service import MemorySystem
+    from agent.observability.audit import AuditStore, record_event
+    from agent.orchestration import cron
+    from agent.orchestration.pending_actions import PendingActionStore
+    from agent.orchestration.tasks import create_task
+    from agent.persistence.repositories import audit as audit_repo
+    from agent.sessions.state_store import RecoveryStore
+    from agent.targets.store import TargetStore
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        config,
+        "TARGET_BROWSE_ROOTS",
+        (tmp_path.resolve(),),
+    )
+
+    target = TargetStore().create({
+        "name": "pg facade target",
+        "root": str(project),
+    })
+    task = create_task("pg facade task")
+    memory = MemorySystem()
+    memory_record = memory.add("pg facade memory")
+    action = PendingActionStore().create_tool_call(
+        "bash",
+        {"command": "echo hello"},
+        session_id="pgtest_facade_session",
+        owner_id="pgtest_user",
+    )
+    sessions = RecoveryStore()
+    sessions.save_session(
+        "pgtest_facade_session",
+        owner_id="pgtest_user",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+    sessions.save_run(
+        "pgtest_facade_run",
+        session_id="pgtest_facade_session",
+        owner_id="pgtest_user",
+        source="chat",
+        status="running",
+        phase="model",
+        user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        safe_to_resume=True,
+    )
+    event = record_event(
+        "pg.facade.test",
+        "PostgreSQL facade test",
+        session_id="pgtest_facade_session",
+    )
+    cron_job, _ = cron.schedule_job(
+        "0 9 * * *",
+        "pg facade cron",
+        name="pg facade cron",
+    )
+
+    try:
+        assert target_repo.fetch_target(target.id)["name"] == "pg facade target"
+        assert task_repo.fetch_task(task.id)["subject"] == "pg facade task"
+        assert memory_repo.fetch_memory(memory_record["id"])["content"] == (
+            "pg facade memory"
+        )
+        assert action_repo.fetch_action(action.id)["status"] == "pending"
+        assert session_repo.fetch_session("pgtest_facade_session")["message_count"] == 1
+        assert run_repo.fetch_run("pgtest_facade_run")["status"] == "running"
+        assert event is not None
+        assert any(
+            item.id == event.id
+            for item in AuditStore().list_events(
+                session_id="pgtest_facade_session"
+            )
+        )
+        assert any(
+            item["id"] == cron_job.id
+            for item in cron_repo.fetch_cron_jobs()
+        )
+    finally:
+        TargetStore().delete(target.id)
+        task_repo.delete_task(task.id)
+        memory_repo.delete_memory(memory_record["id"])
+        action_repo.delete_action(action.id)
+        run_repo.delete_run("pgtest_facade_run")
+        session_repo.delete_session("pgtest_facade_session")
+        if event is not None:
+            audit_repo.delete_audit_event(event.id)
+        cron.cancel_job(cron_job.id)

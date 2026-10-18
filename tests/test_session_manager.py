@@ -31,10 +31,7 @@ class FakeAgent:
 
 
 def _store(tmp_path):
-    return RecoveryStore(
-        sessions_dir=tmp_path / ".sessions",
-        runs_dir=tmp_path / ".runs",
-    )
+    return RecoveryStore()
 
 
 def test_session_manager_restores_messages(tmp_path):

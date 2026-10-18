@@ -16,22 +16,15 @@ build/
 /disk_logs/
 /output/
 /tmp/
+/eval-artifacts/
 /.mailboxes/
 /logs/
 .pytest-*/
 .pytest_tmp_*/
 
 # 运行时生成的数据
-.tasks/
 .mcp_servers.json
-.memory/
-.audit/
 .sandboxes/
-.sessions/
-.runs/
-.background/
-.cron_logs/
-.scheduled_tasks.json
 .transcripts/
 .task_outputs/
 .worktrees/

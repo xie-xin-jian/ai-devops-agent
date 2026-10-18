@@ -20,7 +20,6 @@ def db(monkeypatch):
     Base.metadata.create_all(engine)
     monkeypatch.setattr(database, "_engine", engine)
     monkeypatch.setattr(database, "_session_factory", None)
-    monkeypatch.setattr(config, "PERSISTENCE_BACKEND", "dual")
     monkeypatch.setattr(config, "DATABASE_URL", "sqlite+pysqlite://")
     yield engine
     database.dispose_engine()

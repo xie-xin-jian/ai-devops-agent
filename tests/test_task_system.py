@@ -1,8 +1,4 @@
-"""task_system.py 任务系统测试。
-
-使用 isolated_tasks_dir fixture 隔离测试数据，避免污染真实 .tasks/ 目录。
-"""
-import json
+"""task_system.py 任务系统测试。"""
 import time
 
 import pytest
@@ -10,6 +6,7 @@ from agent.orchestration.tasks import (
     create_task, claim_task, complete_task, list_tasks,
     can_start, get_task_json, load_task,
 )
+from agent.persistence.repositories import tasks as task_repo
 
 
 # ── 创建与查询 ──
@@ -29,19 +26,16 @@ def test_create_task(isolated_tasks_dir):
 
 
 def test_legacy_task_defaults(isolated_tasks_dir):
-    """缺少新字段的旧任务文件仍应能够加载。"""
+    """缺少可选字段的数据库任务仍应能够加载。"""
     task_id = "task_legacy"
-    (isolated_tasks_dir / f"{task_id}.json").write_text(
-        json.dumps({
-            "id": task_id,
-            "subject": "Legacy task",
-            "description": "",
-            "status": "pending",
-            "owner": None,
-            "blockedBy": [],
-        }),
-        encoding="utf-8",
-    )
+    task_repo.upsert_task({
+        "id": task_id,
+        "subject": "Legacy task",
+        "description": "",
+        "status": "pending",
+        "owner": None,
+        "blockedBy": [],
+    }, force=True)
 
     task = load_task(task_id)
     assert task.priority == "medium"

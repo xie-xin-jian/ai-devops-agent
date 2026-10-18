@@ -24,9 +24,12 @@ from agent.observability.audit import (
     SEVERITY_INFO,
 )
 from agent.observability.logger import logger
-from agent.orchestration.approval_coordinator import ToolApprovalRequired
+from agent.orchestration.approval_coordinator import (
+    ToolApprovalRequired,
+    approval_coordinator,
+)
 from agent.orchestration.background import collect_background_results
-from agent.persistence.writer import persist_run_usage
+from agent.persistence.repositories.usage import persist_run_usage
 from agent.platform.config import (
     PRICE_CACHE_HIT_PER_M,
     PRICE_INPUT_PER_M,
@@ -285,7 +288,7 @@ class AgentPipelineMixin:
             }
             logger.info(f"[bg] 收到 {len(bg_notifications)} 条后台任务通知")
 
-        max_turns = 50
+        max_turns = max(1, int(getattr(self, "max_turns", 50) or 50))
         final_text = ""
         context_recovery_attempts = 0
         max_context_recovery_attempts = 2
@@ -506,21 +509,27 @@ class AgentPipelineMixin:
                 try:
                     output = self._handle_tool_call(block)
                 except ToolApprovalRequired as approval:
-                    yield {
-                        "type": "pending_action",
-                        "pending_action": approval.record.to_dict(),
-                        "turn": turn + 1,
-                    }
-                    self._persist_run_state(
-                        status="running",
-                        phase="waiting_approval",
-                        safe_to_resume=False,
-                        active_tool=block.name,
-                    )
-                    output = self._await_tool_approval(
-                        approval.record,
-                        cancel_event,
-                    )
+                    # Register before exposing the event so an automated
+                    # consumer can decide while this generator is suspended.
+                    approval_coordinator.register(approval.record.id)
+                    try:
+                        yield {
+                            "type": "pending_action",
+                            "pending_action": approval.record.to_dict(),
+                            "turn": turn + 1,
+                        }
+                        self._persist_run_state(
+                            status="running",
+                            phase="waiting_approval",
+                            safe_to_resume=False,
+                            active_tool=block.name,
+                        )
+                        output = self._await_tool_approval(
+                            approval.record,
+                            cancel_event,
+                        )
+                    finally:
+                        approval_coordinator.clear(approval.record.id)
                 except Exception as tool_err:
                     output = f"Error: {tool_err}"
                     logger.error(f"[turn {turn+1}] tool {block.name} 异常: {tool_err}")

@@ -9,10 +9,7 @@ from agent.observability.audit import (
 )
 
 
-def test_audit_store_redacts_sensitive_values(tmp_path, monkeypatch):
-    path = tmp_path / "events.jsonl"
-    monkeypatch.setattr("agent.observability.audit.AUDIT_EVENTS_PATH", path)
-
+def test_audit_store_redacts_sensitive_values():
     event = record_event(
         "tool.started",
         "Tool started",
@@ -24,16 +21,14 @@ def test_audit_store_redacts_sensitive_values(tmp_path, monkeypatch):
     )
 
     assert event is not None
-    stored = AuditStore(path).list_events()[0]
+    stored = AuditStore().list_events()[0]
     assert stored.payload["api_key"] == "***"
     assert stored.payload["authorization"] == "***"
     assert stored.payload["command"] == "echo ok"
 
 
-def test_audit_store_filters_and_orders_run_trace(tmp_path, monkeypatch):
-    path = tmp_path / "events.jsonl"
-    monkeypatch.setattr("agent.observability.audit.AUDIT_EVENTS_PATH", path)
-    store = AuditStore(path)
+def test_audit_store_filters_and_orders_run_trace():
+    store = AuditStore()
     first = record_event(
         "run.started",
         "started",
@@ -64,9 +59,7 @@ def test_audit_store_filters_and_orders_run_trace(tmp_path, monkeypatch):
     ]
 
 
-def test_audit_api_lists_events_and_timeline(tmp_path, monkeypatch):
-    path = tmp_path / "events.jsonl"
-    monkeypatch.setattr("agent.observability.audit.AUDIT_EVENTS_PATH", path)
+def test_audit_api_lists_events_and_timeline():
     record_event(
         "run.started",
         "started",

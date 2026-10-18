@@ -12,11 +12,8 @@ _engine = None
 _session_factory = None
 
 
-def postgres_enabled() -> bool:
-    return (
-        config.PERSISTENCE_BACKEND in {"dual", "postgres"}
-        and bool(config.DATABASE_URL)
-    )
+def persistence_enabled() -> bool:
+    return bool(config.DATABASE_URL)
 
 
 def _require_sqlalchemy():
@@ -31,8 +28,8 @@ def _require_sqlalchemy():
 
 def get_engine():
     global _engine
-    if not postgres_enabled():
-        raise RuntimeError("PostgreSQL persistence is not enabled")
+    if not persistence_enabled():
+        raise RuntimeError("DATABASE_URL is required")
     if _engine is not None:
         return _engine
 
@@ -45,6 +42,8 @@ def get_engine():
             pool_timeout=config.DB_CONNECT_TIMEOUT,
             connect_args={"connect_timeout": config.DB_CONNECT_TIMEOUT},
         )
+    elif config.DATABASE_URL.startswith("sqlite"):
+        kwargs["connect_args"] = {"check_same_thread": False}
     _engine = sqlalchemy.create_engine(config.DATABASE_URL, **kwargs)
     return _engine
 
@@ -76,7 +75,7 @@ def session_scope() -> Iterator:
 
 
 def ping_database() -> tuple[bool, str]:
-    if not postgres_enabled():
+    if not persistence_enabled():
         return False, "disabled"
     try:
         sqlalchemy = _require_sqlalchemy()
@@ -95,11 +94,34 @@ def dispose_engine() -> None:
     _session_factory = None
 
 
+def create_all() -> None:
+    """Create the schema for isolated SQLite evaluation and test databases."""
+    from agent.persistence.models import Base
+
+    Base.metadata.create_all(get_engine())
+
+
+def persistence_status() -> dict:
+    ok, detail = ping_database()
+    return {
+        "database_url_configured": bool(config.DATABASE_URL),
+        "database_reachable": ok,
+        "database_status": detail,
+        "dialect": (
+            get_engine().dialect.name
+            if config.DATABASE_URL
+            else ""
+        ),
+    }
+
+
 __all__ = [
     "dispose_engine",
+    "create_all",
     "get_engine",
     "get_session_factory",
     "ping_database",
-    "postgres_enabled",
+    "persistence_status",
+    "persistence_enabled",
     "session_scope",
 ]

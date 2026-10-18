@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy import delete as sql_delete
+from sqlalchemy import delete as sql_delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from agent.persistence.database import session_scope
@@ -18,6 +18,29 @@ def _event_dict(event) -> dict:
     if callable(to_dict):
         return to_dict()
     raise TypeError("audit event must be a dict or expose to_dict()")
+
+
+def _row_to_dict(row: AuditEventRecord) -> dict:
+    return {
+        "id": row.id,
+        "occurred_at": row.occurred_at,
+        "event_type": row.event_type,
+        "title": row.title,
+        "summary": row.summary,
+        "result": row.result,
+        "severity": row.severity,
+        "actor": row.actor,
+        "session_id": row.session_id,
+        "run_id": row.run_id,
+        "action_id": row.action_id,
+        "action_code": row.action_code,
+        "tool_name": row.tool_name,
+        "risk_level": row.risk_level,
+        "correlation_id": row.correlation_id,
+        "payload": dict(row.payload or {}),
+        "metadata": dict(row.event_metadata or {}),
+        "created_at": row.created_at,
+    }
 
 
 def persist_audit_event(event) -> bool:
@@ -59,6 +82,42 @@ def persist_audit_event(event) -> bool:
         else:
             session.merge(AuditEventRecord(**values))
     return True
+
+
+def fetch_audit_events(
+    *,
+    session_id: str | None = None,
+    run_id: str | None = None,
+    action_id: str | None = None,
+    event_type: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    statement = select(AuditEventRecord)
+    if session_id:
+        statement = statement.where(
+            AuditEventRecord.session_id == str(session_id)
+        )
+    if run_id:
+        statement = statement.where(
+            AuditEventRecord.run_id == str(run_id)
+        )
+    if action_id:
+        statement = statement.where(
+            AuditEventRecord.action_id == str(action_id)
+        )
+    if event_type:
+        statement = statement.where(
+            AuditEventRecord.event_type == str(event_type)
+        )
+    statement = statement.order_by(
+        AuditEventRecord.occurred_at.desc(),
+        AuditEventRecord.id.desc(),
+    ).limit(max(1, min(int(limit), 1000)))
+    with session_scope() as session:
+        return [
+            _row_to_dict(row)
+            for row in session.execute(statement).scalars()
+        ]
 
 
 def delete_audit_event(event_id: str) -> bool:
@@ -109,5 +168,6 @@ def delete_audit_events_for(
 __all__ = [
     "delete_audit_event",
     "delete_audit_events_for",
+    "fetch_audit_events",
     "persist_audit_event",
 ]

@@ -1,19 +1,24 @@
 """Cron 调度与执行隔离测试。"""
 
-import json
 import queue
+from dataclasses import asdict
 from datetime import datetime
 
 import pytest
 
 from agent.orchestration import cron
+from agent.persistence.repositories import cron as cron_repo
+
+
+def _add_job(job):
+    with cron.cron_lock:
+        cron.scheduled_jobs[job.id] = job
+    cron_repo.upsert_cron_job(asdict(job), force=True)
 
 
 @pytest.fixture(autouse=True)
 def isolated_cron_state(tmp_path, monkeypatch):
-    """隔离 Cron 全局状态、日志目录和执行队列。"""
-    monkeypatch.setattr(cron, "CRON_LOG_DIR", tmp_path / ".cron_logs")
-    monkeypatch.setattr(cron, "DURABLE_CRON_PATH", tmp_path / ".scheduled_tasks.json")
+    """隔离 Cron 全局状态和执行队列。"""
     monkeypatch.setattr(cron, "_cron_execution_queue", queue.Queue())
     monkeypatch.setattr(cron, "_cron_worker_thread", None)
 
@@ -96,8 +101,7 @@ def test_scheduler_enqueues_job_without_running_inline(monkeypatch):
         prompt="check disk",
         recurring=True,
     )
-    with cron.cron_lock:
-        cron.scheduled_jobs[job.id] = job
+    _add_job(job)
 
     with pytest.raises(StopIteration):
         cron.cron_scheduler_loop()
@@ -127,8 +131,7 @@ def test_one_shot_job_is_removed_and_persisted_once(monkeypatch):
         prompt="run once",
         recurring=False,
     )
-    with cron.cron_lock:
-        cron.scheduled_jobs[job.id] = job
+    _add_job(job)
 
     with pytest.raises(StopIteration):
         cron.cron_scheduler_loop()
@@ -155,8 +158,7 @@ def test_scheduler_skips_job_that_is_already_pending(monkeypatch):
         prompt="long task",
         recurring=True,
     )
-    with cron.cron_lock:
-        cron.scheduled_jobs[job.id] = job
+    _add_job(job)
     assert cron._reserve_job(job.id) is True
 
     with pytest.raises(StopIteration):
@@ -189,25 +191,23 @@ def test_cron_job_persists_metadata():
     assert job.enabled is True
     assert job.created_at > 0
 
-    data = json.loads(cron.DURABLE_CRON_PATH.read_text(encoding="utf-8"))
-    assert data[job.id]["name"] == "Daily inspection"
-    assert data[job.id]["description"] == "Check disk and services"
+    stored = next(
+        item for item in cron_repo.fetch_cron_jobs()
+        if item["id"] == job.id
+    )
+    assert stored["name"] == "Daily inspection"
+    assert stored["description"] == "Check disk and services"
 
 
 def test_legacy_cron_job_defaults():
-    """缺少新字段的旧 Cron 数据应使用默认值加载。"""
-    cron.DURABLE_CRON_PATH.write_text(
-        json.dumps({
-            "cron_legacy": {
-                "id": "cron_legacy",
-                "cron": "0 9 * * *",
-                "prompt": "legacy task",
-                "recurring": True,
-                "durable": True,
-            }
-        }),
-        encoding="utf-8",
-    )
+    """缺少可选字段的数据库记录应使用默认值加载。"""
+    cron_repo.upsert_cron_job({
+        "id": "cron_legacy",
+        "cron": "0 9 * * *",
+        "prompt": "legacy task",
+        "recurring": True,
+        "durable": True,
+    }, force=True)
 
     cron.load_durable_jobs()
     job = cron.scheduled_jobs["cron_legacy"]
@@ -260,8 +260,7 @@ def test_scheduler_skips_disabled_job(monkeypatch):
         prompt="disabled task",
         enabled=False,
     )
-    with cron.cron_lock:
-        cron.scheduled_jobs[job.id] = job
+    _add_job(job)
 
     with pytest.raises(StopIteration):
         cron.cron_scheduler_loop()

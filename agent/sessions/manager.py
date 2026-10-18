@@ -29,9 +29,8 @@ def _message_text(content) -> str:
 def _session_summary(record: dict) -> tuple[int, str]:
     """Message count and first user message, from either read path.
 
-    The local store returns the raw message list; the PostgreSQL list read
-    deliberately skips message history and returns a count plus the single
-    message the sidebar needs for its title.
+    Full reads return the raw message list; lightweight reads return a count
+    plus the single message the sidebar needs for its title.
     """
     if "messages" in record:
         count = 0

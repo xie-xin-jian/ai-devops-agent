@@ -81,6 +81,7 @@ class ComprehensiveAgent(
         session_id: str = "",
         target_id: str = "",
         principal: Principal | None = None,
+        max_turns: int = 50,
     ):
         base_url = ANTHROPIC_BASE_URL if ANTHROPIC_BASE_URL else None
         key = api_key or API_KEY
@@ -103,6 +104,7 @@ class ComprehensiveAgent(
         self.tool_context = tool_context or self.principal.to_tool_policy_context()
         self.session_id = session_id
         self.target_id = str(target_id or "")
+        self.max_turns = max(1, int(max_turns or 50))
         self.audit_enabled = bool(session_id)
         self.current_run_id = ""
         self.pending_action_store = PendingActionStore()

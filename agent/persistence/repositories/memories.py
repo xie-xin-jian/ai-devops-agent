@@ -231,11 +231,29 @@ def count_memories() -> int:
         )
 
 
+def memory_generation() -> tuple[int, float, int]:
+    """Cheap change marker used by in-memory retrieval caches."""
+    with session_scope() as session:
+        count_value, max_updated, access_total = session.execute(
+            select(
+                func.count(MemoryEntryRecord.id),
+                func.max(MemoryEntryRecord.updated_at),
+                func.sum(MemoryEntryRecord.access_count),
+            )
+        ).one()
+        return (
+            int(count_value or 0),
+            float(max_updated or 0.0),
+            int(access_total or 0),
+        )
+
+
 __all__ = [
     "count_memories",
     "delete_memory",
     "fetch_memories",
     "fetch_memory",
+    "memory_generation",
     "upsert_memories",
     "upsert_memory",
 ]

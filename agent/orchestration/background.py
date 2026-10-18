@@ -2,22 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 import uuid
-from pathlib import Path
 
 from agent.observability.audit import record_event
-from agent.persistence import writer as persistence_writer
-from agent.platform.config import BACKGROUND_DIR
+from agent.persistence.repositories import background as background_repo
 from agent.platform.identity import Principal, system_admin_principal
-from agent.platform.storage import atomic_write_json
 from agent.tools.executor import ToolExecutor
 from agent.tools.registry import ToolRegistry
 
-
-BACKGROUND_DIR.mkdir(parents=True, exist_ok=True)
 
 _bg_counter = 0
 background_tasks: dict[str, dict] = {}
@@ -71,10 +65,6 @@ def should_run_background(tool_name: str, tool_input: dict) -> bool:
     )
 
 
-def _background_path(bg_id: str) -> Path:
-    return BACKGROUND_DIR / f"{bg_id}.json"
-
-
 def _persist_task(bg_id: str) -> None:
     with background_lock:
         task = dict(background_tasks.get(bg_id) or {})
@@ -87,23 +77,15 @@ def _persist_task(bg_id: str) -> None:
         "output": output,
         "updated_at": time.time(),
     }
-    atomic_write_json(_background_path(bg_id), payload)
-    persistence_writer.persist_background_task(payload)
+    background_repo.upsert_background_task(payload, force=True)
 
 
 def _load_persisted_tasks() -> dict[str, dict]:
-    tasks = {}
-    for path in sorted(
-        BACKGROUND_DIR.glob("bg_*.json"),
-        reverse=True,
-    ):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError):
-            continue
-        bg_id = str(data.get("background_id") or path.stem)
-        tasks[bg_id] = data
-    return tasks
+    return {
+        str(item.get("background_id") or ""): dict(item)
+        for item in background_repo.fetch_background_tasks()
+        if item.get("background_id")
+    }
 
 
 def load_persisted_background_tasks() -> dict[str, dict]:
@@ -114,25 +96,26 @@ def load_persisted_background_tasks() -> dict[str, dict]:
 def recover_interrupted_background_tasks(reason: str) -> list[dict]:
     """Mark tasks that were running when the process stopped as failed."""
     recovered = []
-    for path in sorted(BACKGROUND_DIR.glob("bg_*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError):
-            continue
+    for data in background_repo.fetch_background_tasks():
         if not isinstance(data, dict) or data.get("status") != "running":
             continue
-        bg_id = str(data.get("background_id") or path.stem)
-        data["status"] = "failed"
-        data["error"] = str(reason)
-        data["interruption_reason"] = str(reason)
-        data["updated_at"] = time.time()
-        atomic_write_json(path, data)
-        persistence_writer.mark_background_interrupted(
+        bg_id = str(data.get("background_id") or "")
+        if not bg_id:
+            continue
+        now = time.time()
+        background_repo.mark_background_interrupted(
             bg_id,
             reason=str(reason),
-            at=float(data["updated_at"]),
+            at=now,
         )
-        recovered.append({"background_id": bg_id, **data})
+        updated = background_repo.fetch_background_task(bg_id) or {
+            **data,
+            "status": "failed",
+            "error": str(reason),
+            "interruption_reason": str(reason),
+            "updated_at": now,
+        }
+        recovered.append(updated)
         record_event(
             "background.run.interrupted",
             f"Background run interrupted: {bg_id}",

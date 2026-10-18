@@ -265,7 +265,6 @@ class ToolLoopMixin:
         )
         from agent.orchestration.pending_executor import execute_pending_action
 
-        approval_coordinator.register(record.id)
         try:
             decision = approval_coordinator.wait(
                 record.id,
@@ -285,6 +284,12 @@ class ToolLoopMixin:
                     "The command was not executed."
                 )
 
+            current = self.pending_action_store.get(record.id)
+            if current is not None and current.status == "pending":
+                self.pending_action_store.confirm(
+                    record.id,
+                    actor=decision.actor or "user",
+                )
             result = execute_pending_action(record, self.principal)
             status = (
                 STATUS_EXECUTED

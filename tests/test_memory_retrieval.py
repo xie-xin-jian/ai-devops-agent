@@ -6,7 +6,6 @@ from agent.tools.registry import ToolRegistry
 
 
 def _build_memory_system(tmp_path, monkeypatch) -> memory.MemorySystem:
-    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     system.add(
         "Nginx 502，上游 PHP-FPM 未监听",
@@ -89,7 +88,6 @@ def test_retrieval_respects_scope(tmp_path, monkeypatch):
 
 
 def test_relevance_gate_ignores_high_importance_noise(tmp_path, monkeypatch):
-    monkeypatch.setattr("agent.memory.store.MEMORY_DIR", tmp_path)
     system = memory.MemorySystem()
     system.add(
         "公司年会在三月举办",

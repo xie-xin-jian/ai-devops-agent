@@ -58,10 +58,7 @@ def test_serialize_messages_round_trip_tool_blocks():
 
 
 def test_session_state_lifecycle(tmp_path):
-    store = RecoveryStore(
-        sessions_dir=tmp_path / ".sessions",
-        runs_dir=tmp_path / ".runs",
-    )
+    store = RecoveryStore()
 
     store.save_session(
         "session-1",
@@ -79,10 +76,7 @@ def test_session_state_lifecycle(tmp_path):
 
 
 def test_interrupt_stale_runs_preserves_safe_point(tmp_path):
-    store = RecoveryStore(
-        sessions_dir=tmp_path / ".sessions",
-        runs_dir=tmp_path / ".runs",
-    )
+    store = RecoveryStore()
     store.create_run(
         "run-safe",
         session_id="session-1",
@@ -134,10 +128,7 @@ def test_agent_run_persists_session_and_completed_run(
     tmp_path,
     monkeypatch,
 ):
-    store = RecoveryStore(
-        sessions_dir=tmp_path / ".sessions",
-        runs_dir=tmp_path / ".runs",
-    )
+    store = RecoveryStore()
     agent = object.__new__(comprehensive.ComprehensiveAgent)
     agent.session_id = "session-1"
     agent.principal = system_admin_principal()

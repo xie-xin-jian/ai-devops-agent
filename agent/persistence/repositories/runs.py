@@ -77,9 +77,7 @@ def _run_values(record: dict) -> dict:
         "status": str(record.get("status") or RUN_STATUS_RUNNING)[:32],
         "phase": str(record.get("phase") or "model")[:40],
         "user_message": str(record.get("user_message") or ""),
-        # Defaults must match what the local store would report: a record
-        # without the flag is not resumable, so the mirror must not invent
-        # a resumable run.
+        # A record without the flag is not resumable.
         "safe_to_resume": bool(record.get("safe_to_resume", False)),
         "active_tool": str(record.get("active_tool") or "")[:120],
         "interruption_reason": str(record.get("interruption_reason") or ""),
@@ -205,7 +203,7 @@ def fetch_runs(
 ) -> list[dict]:
     statement = select(RunRecord)
     if owner_id:
-        # Matches the local store: runs without an owner stay visible.
+        # Runs without an owner stay visible.
         statement = statement.where(
             or_(
                 RunRecord.owner_id == str(owner_id),

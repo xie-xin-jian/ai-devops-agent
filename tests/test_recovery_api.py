@@ -2,15 +2,11 @@
 
 import threading
 
-from agent.platform import config
 from agent.sessions.state_store import RecoveryStore
 
 
-def _store(tmp_path):
-    return RecoveryStore(
-        sessions_dir=tmp_path / ".sessions",
-        runs_dir=tmp_path / ".runs",
-    )
+def _store():
+    return RecoveryStore()
 
 
 def test_recovery_api_lists_and_rejects_unsafe_resume(
@@ -20,9 +16,7 @@ def test_recovery_api_lists_and_rejects_unsafe_resume(
     from fastapi.testclient import TestClient
     from api.main import app
 
-    monkeypatch.setattr(config, "SESSIONS_DIR", tmp_path / ".sessions")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / ".runs")
-    store = _store(tmp_path)
+    store = _store()
     store.save_run(
         "run-unsafe",
         session_id="session-1",
@@ -54,9 +48,7 @@ def test_recovery_api_streams_from_safe_point(tmp_path, monkeypatch):
     import api.main
     from api.main import app
 
-    monkeypatch.setattr(config, "SESSIONS_DIR", tmp_path / ".sessions")
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / ".runs")
-    store = _store(tmp_path)
+    store = _store()
     store.save_run(
         "run-safe",
         session_id="session-1",

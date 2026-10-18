@@ -129,7 +129,7 @@ async def delete_task(
     task_id: str,
     _principal: Principal = Depends(require_permissions(TASK_WRITE)),
 ):
-    """删除任务及其持久化镜像。"""
+    """删除任务及其依赖关系。"""
     try:
         remove_task(task_id)
         return {"success": True, "deleted": task_id}
