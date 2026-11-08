@@ -4,7 +4,7 @@ import time
 import pytest
 from agent.orchestration.tasks import (
     create_task, claim_task, complete_task, list_tasks,
-    can_start, get_task_json, load_task,
+    can_start, get_task_json, load_task, release_run_tasks,
 )
 from agent.persistence.repositories import tasks as task_repo
 
@@ -59,6 +59,39 @@ def test_list_tasks(isolated_tasks_dir):
     create_task("Task 3")
     tasks = list_tasks()
     assert len(tasks) == 3
+
+
+def test_list_tasks_filters_by_session(isolated_tasks_dir):
+    """会话任务只对本会话可见；UI 任务作为共享任务全局可见。"""
+    create_task("A", session_id="s1", source="agent")
+    create_task("B", session_id="s2", source="agent")
+    create_task("Shared", source="ui")
+    create_task("Legacy")
+
+    scoped = {t.subject for t in list_tasks(session_id="s1")}
+    assert scoped == {"A", "Shared"}
+    assert len(list_tasks()) == 4
+
+
+def test_active_tasks_note(isolated_tasks_dir):
+    """注入内容只包含本会话的活跃任务。"""
+    from agent.core.context_manager import ContextManagerMixin
+
+    agent = ContextManagerMixin()
+    agent.session_id = "s1"
+    active = create_task("Visible", session_id="s1", source="agent")
+    done = create_task("Done", session_id="s1", source="agent")
+    claim_task(done.id)
+    complete_task(done.id)
+    create_task("Other", session_id="s2", source="agent")
+
+    note = agent._active_tasks_note()
+    assert active.id in note
+    assert done.id not in note
+    assert "Other" not in note
+
+    agent.session_id = ""
+    assert agent._active_tasks_note() == ""
 
 
 # ── 认领与完成 ──
@@ -130,11 +163,39 @@ def test_cannot_claim_non_pending(isolated_tasks_dir):
     assert "cannot claim" in result
 
 
-def test_cannot_complete_non_in_progress(isolated_tasks_dir):
-    """非 in_progress 状态应阻止完成。"""
+def test_complete_pending_auto_claims(isolated_tasks_dir):
+    """pending 任务可自动认领并完成；重复完成应幂等。"""
     t = create_task("Task 1")
     result = complete_task(t.id)
-    assert "cannot complete" in result
+    assert "Completed" in result
+    loaded = load_task(t.id)
+    assert loaded.status == "completed"
+    assert loaded.owner == "agent"
+
+    assert "already completed" in complete_task(t.id)
+
+
+def test_complete_pending_blocked_is_rejected(isolated_tasks_dir):
+    """依赖未完成的 pending 任务不能直接完成。"""
+    t1 = create_task("Task 1")
+    t2 = create_task("Task 2", blockedBy=[t1.id])
+    result = complete_task(t2.id)
+    assert "blocked" in result
+    assert load_task(t2.id).status == "pending"
+
+
+def test_release_run_tasks(isolated_tasks_dir):
+    """run 结束后，未完成的任务应退回 pending。"""
+    t = create_task("Task 1", run_id="run_a")
+    claim_task(t.id, run_id="run_a")
+    assert load_task(t.id).status == "in_progress"
+
+    released = release_run_tasks("run_a", "run ended: cancelled")
+    assert released == 1
+    loaded = load_task(t.id)
+    assert loaded.status == "pending"
+    assert loaded.owner is None
+    assert loaded.metadata["last_interruption"] == "run ended: cancelled"
 
 
 @pytest.mark.asyncio

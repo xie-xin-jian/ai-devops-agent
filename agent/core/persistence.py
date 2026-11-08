@@ -72,6 +72,16 @@ class RuntimePersistenceMixin:
         *,
         safe_to_resume: bool = False,
     ) -> None:
+        # 本 run 认领但未完成的任务退回 pending，避免永久卡在 in_progress。
+        try:
+            from agent.orchestration.tasks import release_run_tasks
+
+            release_run_tasks(
+                getattr(self, "current_run_id", ""),
+                reason=f"run ended: {status}",
+            )
+        except Exception:
+            pass
         self._persist_run_state(
             status=status,
             phase=phase,

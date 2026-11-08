@@ -1,6 +1,6 @@
 import json
 import time
-import random
+import uuid
 import threading
 from dataclasses import dataclass, asdict, field
 from agent.persistence.repositories import tasks as task_repo
@@ -67,18 +67,27 @@ def create_task(subject: str, description: str = "",
                 priority: str = "medium",
                 *,
                 source: str = "task",
-                metadata: dict | None = None) -> Task:
+                metadata: dict | None = None,
+                session_id: str = "",
+                owner_id: str = "",
+                run_id: str = "") -> Task:
     with _tasks_lock:
         if priority not in VALID_PRIORITIES:
             priority = "medium"
         now = time.time()
+        meta = dict(metadata or {})
+        if session_id:
+            meta["session_id"] = session_id
+        if owner_id:
+            meta["owner_id"] = owner_id
         task = Task(
-            id=f"task_{int(time.time())}_{random.randint(0, 9999):04d}",
+            id=f"task_{int(time.time())}_{uuid.uuid4().hex[:8]}",
             subject=subject, description=description,
             status="pending", owner=None,
             blockedBy=blockedBy or [],
+            run_id=run_id,
             source=source,
-            metadata=dict(metadata or {}),
+            metadata=meta,
             priority=priority,
             created_at=now,
             updated_at=now,
@@ -108,11 +117,36 @@ def load_task(task_id: str) -> Task:
     return _task_from_dict(record)
 
 
-def list_tasks() -> list[Task]:
-    return [
-        _task_from_dict(item)
-        for item in task_repo.fetch_tasks()
-    ]
+def _task_session_id(task: Task) -> str:
+    return str((task.metadata or {}).get("session_id") or "")
+
+
+def list_tasks(
+    *,
+    session_id: str | None = None,
+    statuses: tuple[str, ...] | None = None,
+    limit: int | None = None,
+) -> list[Task]:
+    """List tasks, optionally scoped to a session.
+
+    Tasks created by the agent carry ``metadata.session_id``; UI tasks have
+    ``source == "ui"`` and no session, and stay visible from every session.
+    Legacy tasks (``source == "task"`` without a session) are not exposed to
+    the agent, which prevents old plans from leaking into new conversations.
+    """
+    tasks = [_task_from_dict(item) for item in task_repo.fetch_tasks()]
+    if session_id is not None:
+        tasks = [
+            task for task in tasks
+            if _task_session_id(task) == session_id
+            or (task.source == "ui" and not _task_session_id(task))
+        ]
+    if statuses is not None:
+        allowed = set(statuses)
+        tasks = [task for task in tasks if task.status in allowed]
+    if limit is not None:
+        tasks = tasks[:limit]
+    return tasks
 
 
 def _task_exists(task_id: str) -> bool:
@@ -168,7 +202,15 @@ def claim_task(
 def complete_task(task_id: str, result: str = "") -> str:
     with _tasks_lock:
         task = load_task(task_id)
-        if task.status != "in_progress":
+        if task.status == "completed":
+            return f"Task {task.id} already completed"
+        if task.status == "pending":
+            if not can_start(task_id):
+                return (f"Cannot complete {task.id} — "
+                        "blocked by unfinished dependencies")
+            task.owner = task.owner or "agent"
+            task.status = "in_progress"
+        elif task.status != "in_progress":
             return f"Task {task_id} is {task.status}, cannot complete"
         task.status = "completed"
         task.result = result
@@ -180,3 +222,24 @@ def complete_task(task_id: str, result: str = "") -> str:
         if unblocked:
             msg += f"\nUnblocked: {', '.join(unblocked)}"
         return msg
+
+
+def release_run_tasks(run_id: str, reason: str = "") -> int:
+    """Return tasks left in_progress by a finished run to the pending pool."""
+    if not run_id:
+        return 0
+    with _tasks_lock:
+        released = 0
+        for task in list_tasks(statuses=("in_progress",)):
+            if task.run_id != run_id:
+                continue
+            task.status = "pending"
+            task.owner = None
+            task.metadata = {
+                **(task.metadata or {}),
+                "last_run_id": run_id,
+                "last_interruption": reason,
+            }
+            save_task(task)
+            released += 1
+        return released

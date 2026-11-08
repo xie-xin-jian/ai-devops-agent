@@ -40,6 +40,7 @@ async def create_new_task(
         payload.description,
         payload.blockedBy,
         payload.priority,
+        source="ui",
     )
     return _task_dict(task)
 

@@ -122,8 +122,10 @@ class ToolLoopMixin:
         # 动态合并 MCP 工具：每次调用 API 前把已连接的 MCP 服务器工具合并进来
         registry = self._runtime_tool_registry()
         tools = registry.filtered_schemas(self.tool_context)
-        # 刷新系统提示（MCP 连接可能变化）
+        # system prompt 保持静态（不含时间/记忆），动态部分只追加到最后一条
+        # user 消息，避免每次调用前缀变化导致 prompt cache 全部失效。
         system_prompt = self._build_system_prompt()
+        messages = self._inject_runtime_context(messages)
 
         def _call():
             return self.client.messages.create(

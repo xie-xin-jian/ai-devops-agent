@@ -14,6 +14,7 @@ from agent.core.context_compact import (
 )
 from agent.mcp.client import assemble_tool_pool, list_connected_mcp
 from agent.memory.policy import readable_scopes
+from agent.orchestration.tasks import list_tasks
 from agent.platform.identity import system_admin_principal
 from agent.platform.skill import list_skills
 from agent.tools.registry import ToolRegistry
@@ -47,7 +48,6 @@ class ContextManagerMixin:
             "You are an AI DevOps assistant. Act, don't explain.",
             f"Available tools: {', '.join(tool_names)}",
             f"Working directory: {WORKDIR}",
-            f"Current time: {datetime.now().isoformat(timespec='seconds')}",
             "bash runs on the host only after user approval. Its default "
             "working directory is the active target root. Sandbox file tools "
             "are not a substitute for target_* tools.",
@@ -94,6 +94,55 @@ class ContextManagerMixin:
                 "choose one in the Targets page before inspecting or "
                 "operating a host project."
             )
+        return "\n\n".join(sections)
+
+    def _active_tasks_note(self) -> str:
+        """Inject the session's active tasks so plans survive across turns."""
+        session_id = getattr(self, "session_id", "")
+        if not session_id:
+            return ""
+        try:
+            tasks = list_tasks(
+                session_id=session_id,
+                statuses=("pending", "in_progress"),
+                limit=8,
+            )
+        except Exception:
+            return ""
+        if not tasks:
+            return ""
+        status_rank = {"in_progress": 0, "pending": 1}
+        priority_rank = {"high": 0, "medium": 1, "low": 2}
+        tasks = sorted(
+            tasks,
+            key=lambda task: (
+                status_rank.get(task.status, 9),
+                priority_rank.get(task.priority, 9),
+                task.created_at,
+            ),
+        )[:8]
+        lines = []
+        for task in tasks:
+            line = f"- {task.id}: {task.subject[:80]} [{task.status}]"
+            if task.blockedBy:
+                line += f" (blockedBy: {', '.join(task.blockedBy)})"
+            lines.append(line)
+        return (
+            "Active tasks (this session):\n"
+            + "\n".join(lines)
+            + "\nClaim before starting an item; complete with a concrete result."
+        )
+
+    def _runtime_tail_note(self) -> str:
+        """每轮变化的上下文（时间、任务、记忆、MCP 连接）。
+
+        刻意不放进 system prompt：供应商按前缀缓存，把秒级时间或按问题
+        检索出的记忆放进去会让每次调用的前缀都不同，缓存全部失效。
+        """
+        parts = [f"Current time: {datetime.now().isoformat(timespec='seconds')}"]
+        tasks_note = self._active_tasks_note()
+        if tasks_note:
+            parts.append(tasks_note)
         if self._last_user_query:
             principal = getattr(self, "principal", None) or system_admin_principal()
             memories_text = self.memory.format_relevant(
@@ -105,16 +154,48 @@ class ContextManagerMixin:
                 ),
             )
             if not memories_text.startswith("(no relevant"):
-                sections.append("Relevant memories:\n" + memories_text)
+                parts.append("Relevant memories:\n" + memories_text)
         mcp_names = [s["name"] for s in list_connected_mcp()]
         if mcp_names:
-            sections.append(f"Connected MCP servers: {', '.join(mcp_names)}")
-            sections.append("MCP tools are prefixed mcp__{server}__{tool}.")
-        return "\n\n".join(sections)
+            parts.append(
+                f"Connected MCP servers: {', '.join(mcp_names)}\n"
+                "MCP tools are prefixed mcp__{server}__{tool}."
+            )
+        return "\n\n".join(parts)
+
+    def _inject_runtime_context(self, messages: list) -> list:
+        """把动态上下文追加到最后一条 user 消息末尾。
+
+        只改尾部，保证前面所有内容的前缀保持稳定，从而命中 prompt cache。
+        返回新列表，不修改调用方持有的历史（不落盘）。
+        """
+        note = self._runtime_tail_note()
+        if not note or not messages:
+            return messages
+        last = len(messages) - 1
+        if messages[last].get("role") != "user":
+            return messages
+        injected = list(messages)
+        tail = dict(messages[last])
+        content = tail.get("content")
+        if isinstance(content, str):
+            tail["content"] = f"{content}\n\n{note}" if content else note
+        elif isinstance(content, list):
+            # tool_result 块必须在最前，文本块追加在其后
+            tail["content"] = list(content) + [{"type": "text", "text": note}]
+        else:
+            tail["content"] = note
+        injected[last] = tail
+        return injected
 
     def _compact_if_needed(self, messages: list) -> list:
         messages = tool_result_budget(messages)
-        messages = micro_compact(messages)
-        if estimate_size(messages) > CONTEXT_LIMIT:
+        size = estimate_size(messages)
+        # 只有真的超过水位才做有损压缩：micro_compact 每轮改写中段历史
+        # 会让 prompt cache 前缀失效，因此不能无条件执行。
+        if size > CONTEXT_LIMIT:
+            messages = micro_compact(messages)
+            size = estimate_size(messages)
+        if size > CONTEXT_LIMIT:
             messages = snip_compact(messages)
         return trim_by_size(messages, CONTEXT_BYTES_BUDGET)
