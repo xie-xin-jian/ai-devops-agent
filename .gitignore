@@ -16,6 +16,7 @@ build/
 /disk_logs/
 /output/
 /tmp/
+/.tmp/
 /eval-artifacts/
 /.mailboxes/
 /logs/
@@ -42,3 +43,7 @@ docs/notes/
 # 前端构建产物（服务器上重新构建）
 static/
 tsconfig.tsbuildinfo
+
+# Local server backups may contain credentials and customer data.
+/backups/
+/.target_backups/
