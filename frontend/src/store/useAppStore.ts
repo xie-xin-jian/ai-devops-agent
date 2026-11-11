@@ -15,6 +15,7 @@ type View =
   | 'recovery'
   | 'sandboxes'
   | 'targets'
+  | 'eval'
 
 export interface ToolCallRecord {
   turn: number

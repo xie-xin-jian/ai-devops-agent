@@ -4,6 +4,7 @@ import {
   Box,
   ChevronDown,
   Clock,
+  FlaskConical,
   Folder,
   ListTodo,
   Moon,
@@ -28,6 +29,7 @@ const navItems = [
   { id: 'audit' as const, label: '审计', icon: ScrollText },
   { id: 'recovery' as const, label: '恢复', icon: RotateCcw },
   { id: 'sandboxes' as const, label: '工作区', icon: Box },
+  { id: 'eval' as const, label: '评估', icon: FlaskConical },
 ]
 
 export default function Sidebar() {

@@ -11,6 +11,7 @@ import Audit from './pages/Audit'
 import Sandboxes from './pages/Sandboxes'
 import Recovery from './pages/Recovery'
 import Targets from './pages/Targets'
+import Evaluation from './pages/Evaluation'
 import { useAppStore } from './store/useAppStore'
 
 function App() {
@@ -58,6 +59,7 @@ function App() {
     sandboxes: <Sandboxes />,
     recovery: <Recovery />,
     targets: <Targets />,
+    eval: <Evaluation />,
   }
 
   return <Layout>{pages[view] || <Chat />}</Layout>

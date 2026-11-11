@@ -43,6 +43,7 @@ from .routes.memory_route import router as memory_router
 from .routes.recovery_route import router as recovery_router
 from .routes.sandbox_route import router as sandbox_router
 from .routes.target_route import router as target_router
+from .routes.eval_route import router as eval_router
 
 
 @asynccontextmanager
@@ -379,6 +380,7 @@ app.include_router(
 )
 app.include_router(sandbox_router, prefix="/api/sandboxes", tags=["sandboxes"])
 app.include_router(target_router, prefix="/api/targets", tags=["targets"])
+app.include_router(eval_router, prefix="/api/eval", tags=["eval"])
 
 # 挂载前端静态文件
 _static_dir = Path(__file__).parent.parent / "static"

@@ -1,4 +1,5 @@
 import type { Message, Task, CronJob, CronLog, MCPServer, Tool, HealthStatus, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail, Target, TargetBrowserResult, PendingAction } from '../types'
+import type { EvalBatchSummary, EvalReport, EvalComparison } from '../types/eval'
 
 const API_BASE = ''
 const API_TOKEN = import.meta.env.VITE_API_TOKEN || ''
@@ -184,6 +185,20 @@ export const auditApi = {
       `/api/audit/events${suffix ? `?${suffix}` : ''}`
     )
   },
+}
+
+export const evalApi = {
+  batches: () =>
+    request<{ batches: EvalBatchSummary[]; reports_dir: string }>(
+      '/api/eval/batches'
+    ),
+  report: (batchId: string) =>
+    request<EvalReport>(`/api/eval/reports/${encodeURIComponent(batchId)}`),
+  compare: (baselineId: string, currentId: string) =>
+    request<EvalComparison>(
+      `/api/eval/compare?baseline=${encodeURIComponent(baselineId)}` +
+        `&current=${encodeURIComponent(currentId)}`
+    ),
 }
 
 export const targetApi = {

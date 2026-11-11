@@ -531,6 +531,16 @@ MCP 连接成功后动态追加 `mcp__{server}__{tool}`。
 | POST | `/api/recovery/runs/{run_id}/resume/stream` | 从安全点继续 |
 | GET | `/api/sandboxes/` | 活动 Sandbox |
 
+### 评估
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/eval/batches` | 报告列表（含 Wilson 95% 置信区间），按时间倒序 |
+| GET | `/api/eval/reports/{batch_id}` | 单个报告全文（含逐 trial 明细） |
+| GET | `/api/eval/compare` | 两 batch 显著性对比，参数 `baseline` / `current` / `tolerance` / `alpha` |
+
+数据源是 `eval/reports/*.json`（`run_eval.py` 的输出），只读，不依赖数据库。前端「评估」页面即消费这三个接口：batch 列表 → 汇总卡片 → 按用例下钻逐 trial 的评分与工具调用，顶部可发起基线对比。
+
 ### 任务 / Cron
 
 | 方法 | 路径 | 说明 |
