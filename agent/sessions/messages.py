@@ -1,7 +1,16 @@
 """Convert internal Agent messages into user-visible chat history."""
 
+import re
 
-_INTERNAL_PREFIXES = ("[Compacted]", "<task_notification>", "<cron_job>")
+
+_INTERNAL_PREFIXES = (
+    "[Compacted]",
+    "[snipped",
+    "以下内容是对此前对话的压缩摘要",
+    "<task_notification>",
+    "<cron_job>",
+)
+_INTERNAL_PATTERNS = (re.compile(r"^\[\d+ earlier messages dropped"),)
 
 
 def _get_value(block, key: str, default=""):
@@ -34,7 +43,11 @@ def serialize_visible_messages(messages: list) -> list[dict]:
             continue
 
         content = _extract_text(message.get("content", ""))
-        if not content or content.startswith(_INTERNAL_PREFIXES):
+        if (
+            not content
+            or content.startswith(_INTERNAL_PREFIXES)
+            or any(pattern.match(content) for pattern in _INTERNAL_PATTERNS)
+        ):
             continue
 
         visible.append({

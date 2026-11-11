@@ -276,6 +276,7 @@ class SessionManager:
                 "title": title or first_user[:32] or "新对话",
                 "updated_at": float(record.get("updated_at") or 0),
                 "message_count": message_count,
+                "target_id": str(record.get("target_id") or ""),
             })
         sessions.sort(
             key=lambda item: item["updated_at"],
