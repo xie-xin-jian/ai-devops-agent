@@ -5,9 +5,9 @@ export default function TopBar({ title }: { title: string }) {
   const { theme, toggleTheme, view, resetMessages } = useAppStore()
 
   return (
-    <header className="flex h-10 items-center justify-between border-b border-border-secondary bg-bg-primary px-4">
+    <header className="flex h-9 shrink-0 items-center justify-between border-b border-border-secondary bg-bg-primary px-4">
       <div className="flex items-center gap-3">
-        <h1 className="text-[12px] text-text-primary">{title}</h1>
+        <h1 className="text-[11px] font-medium text-text-secondary">{title}</h1>
       </div>
 
       <div className="flex items-center gap-1">

@@ -16,6 +16,7 @@ import { useAppStore } from './store/useAppStore'
 
 function App() {
   const view = useAppStore((s) => s.view)
+  const setView = useAppStore((s) => s.setView)
   const checkHealth = useAppStore((s) => s.checkHealth)
   const fetchMessages = useAppStore((s) => s.fetchMessages)
   const fetchTargets = useAppStore((s) => s.fetchTargets)
@@ -46,6 +47,27 @@ function App() {
     fetchTargets()
     fetchPendingActions()
   }, [fetchMessages, fetchTargets, fetchPendingActions])
+
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get('view')
+    const views = new Set([
+      'chat',
+      'tasks',
+      'cron',
+      'tools',
+      'mcp',
+      'skills',
+      'actions',
+      'audit',
+      'recovery',
+      'sandboxes',
+      'targets',
+      'eval',
+    ])
+    if (requested && views.has(requested)) {
+      setView(requested as typeof view)
+    }
+  }, [setView])
 
   const pages: Record<string, React.ReactNode> = {
     chat: <Chat />,
