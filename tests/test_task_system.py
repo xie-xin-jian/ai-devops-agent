@@ -94,6 +94,42 @@ def test_active_tasks_note(isolated_tasks_dir):
     assert agent._active_tasks_note() == ""
 
 
+def test_runtime_tail_note_includes_run_goal(isolated_tasks_dir):
+    """每轮尾部提示重申本轮目标，但不写进历史。"""
+    from agent.core.context_manager import ContextManagerMixin
+
+    agent = ContextManagerMixin()
+    agent.session_id = ""
+    agent.run_goal = "deploy the project"
+    agent._last_user_query = ""
+
+    note = agent._runtime_tail_note()
+
+    assert "Current run goal: deploy the project" in note
+
+
+def test_inject_runtime_context_keeps_history_prefix(isolated_tasks_dir):
+    """动态内容只追加到最后一条 user 消息，历史前缀不变。"""
+    from agent.core.context_manager import ContextManagerMixin
+
+    agent = ContextManagerMixin()
+    agent.session_id = ""
+    agent.run_goal = "fix the outage"
+    agent._last_user_query = ""
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "second"},
+    ]
+
+    injected = agent._inject_runtime_context(messages)
+
+    assert injected[0] == messages[0]
+    assert injected[1] == messages[1]
+    assert injected[2]["content"].startswith("second")
+    assert "Current run goal: fix the outage" in injected[2]["content"]
+
+
 # ── 认领与完成 ──
 
 def test_claim_task(isolated_tasks_dir):

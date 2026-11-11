@@ -3,7 +3,7 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
-from agent.core import comprehensive, context_compact, error_recovery
+from agent.core import comprehensive, context_compact, context_manager, error_recovery
 from agent.core import pipeline
 from agent.platform.identity import system_admin_principal
 from agent.sandbox.manager import SandboxManager
@@ -45,12 +45,17 @@ def test_compact_waits_for_tool_result_pair(monkeypatch):
     ])
     observed_history = []
 
-    def fake_compact_history(messages, client, model):
+    def fake_checkpoint(messages, client, model, *, goal=""):
         observed_history.append(deepcopy(messages))
-        return [{"role": "user", "content": "[Compacted]\n\nsummary"}]
+        return [
+            {
+                "role": "user",
+                "content": context_compact.SUMMARY_PREFIX + f"goal: {goal}",
+            }
+        ]
 
     monkeypatch.setattr(pipeline, "collect_background_results", lambda: [])
-    monkeypatch.setattr(pipeline, "compact_history", fake_compact_history)
+    monkeypatch.setattr(pipeline, "checkpoint_compact", fake_checkpoint)
     monkeypatch.setattr(agent, "_compact_if_needed", lambda messages: messages)
     monkeypatch.setattr(agent, "_call_api", lambda messages: next(responses))
 
@@ -67,7 +72,7 @@ def test_compact_waits_for_tool_result_pair(monkeypatch):
         "tool_use_id": "call_compact",
         "content": "History compaction scheduled for the next safe boundary.",
     }]
-    assert agent.messages[0]["content"].startswith("[Compacted]")
+    assert agent.messages[0]["content"].startswith(context_compact.SUMMARY_PREFIX)
 
 
 def test_recover_context_overflow_reports_reduction(monkeypatch):
@@ -75,22 +80,12 @@ def test_recover_context_overflow_reports_reduction(monkeypatch):
         {"role": "user", "content": "x" * 1000},
         {"role": "assistant", "content": "y" * 1000},
     ]
-    compacted = [{"role": "user", "content": "[Compacted]\nsmall"}]
+    compacted = [{"role": "user", "content": context_compact.SUMMARY_PREFIX + "small"}]
 
     monkeypatch.setattr(
         context_compact,
-        "tool_result_budget",
-        lambda messages: messages,
-    )
-    monkeypatch.setattr(
-        context_compact,
-        "micro_compact",
-        lambda messages: messages,
-    )
-    monkeypatch.setattr(
-        context_compact,
-        "reactive_compact",
-        lambda messages, client, model: compacted,
+        "checkpoint_compact",
+        lambda messages, client, model, goal="": compacted,
     )
 
     result, stats = error_recovery.recover_context_overflow(
@@ -104,30 +99,25 @@ def test_recover_context_overflow_reports_reduction(monkeypatch):
     assert stats["after"] < stats["before"]
 
 
-def test_recover_context_overflow_falls_back_to_snip(monkeypatch):
+def test_recover_context_overflow_falls_back_to_trim(monkeypatch):
     original = [{"role": "user", "content": "x" * 1000}]
-    compacted = [{"role": "user", "content": "y" * 900}]
-    snipped = [{"role": "user", "content": "z"}]
+    checkpointed = [{"role": "user", "content": "y" * 900}]
+    trimmed = [{"role": "user", "content": "z"}]
 
     monkeypatch.setattr(
         context_compact,
+        "checkpoint_compact",
+        lambda messages, client, model, goal="": checkpointed,
+    )
+    monkeypatch.setattr(
+        context_compact,
         "tool_result_budget",
-        lambda messages: messages,
+        lambda messages, max_bytes=None: messages,
     )
     monkeypatch.setattr(
         context_compact,
-        "micro_compact",
-        lambda messages: messages,
-    )
-    monkeypatch.setattr(
-        context_compact,
-        "reactive_compact",
-        lambda messages, client, model: compacted,
-    )
-    monkeypatch.setattr(
-        context_compact,
-        "snip_compact",
-        lambda messages: snipped,
+        "trim_by_size",
+        lambda messages, max_bytes, keep_head=1: trimmed,
     )
 
     result, stats = error_recovery.recover_context_overflow(
@@ -136,7 +126,7 @@ def test_recover_context_overflow_falls_back_to_snip(monkeypatch):
         model="test-model",
     )
 
-    assert result == snipped
+    assert result == trimmed
     assert stats["reduced"] is True
 
 
@@ -168,9 +158,9 @@ def test_agent_retries_once_after_context_recovery(monkeypatch):
             content=[SimpleNamespace(type="text", text="done")]
         )
 
-    def fake_recover(messages, client, model):
+    def fake_recover(messages, client, model, goal=""):
         return (
-            [{"role": "user", "content": "[Compacted]\nsmall"}],
+            [{"role": "user", "content": context_compact.SUMMARY_PREFIX + "small"}],
             {"before": 1000, "after": 100, "reduced": True},
         )
 
@@ -230,7 +220,10 @@ def test_trim_by_size_keeps_head_and_recent_tail():
 
     assert trimmed[0]["content"] == "原始需求"
     assert trimmed[-1]["content"].startswith("m19")
-    assert any("earlier messages dropped" in str(m.get("content")) for m in trimmed)
+    # 裁剪只丢中段，不再往历史里插 "[N earlier messages dropped]" 占位符。
+    assert not any(
+        "earlier messages dropped" in str(m.get("content")) for m in trimmed
+    )
     assert (
         context_compact.estimate_size(trimmed)
         <= 5000 + len(str(trimmed[-1]))
@@ -240,6 +233,133 @@ def test_trim_by_size_keeps_head_and_recent_tail():
 def test_trim_by_size_noop_under_budget():
     messages = [{"role": "user", "content": "hi"}]
     assert context_compact.trim_by_size(messages, 5000) is messages
+
+
+def test_checkpoint_compact_pins_goal_and_has_no_placeholder(tmp_path, monkeypatch):
+    monkeypatch.setattr(context_compact, "TRANSCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(
+        context_compact, "summarize_history", lambda messages, client, model: "done: x"
+    )
+    messages = [
+        {"role": "user", "content": "deploy the project"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1"}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1"}]},
+    ]
+
+    compacted = context_compact.checkpoint_compact(
+        messages, object(), "test-model", goal="deploy the project"
+    )
+
+    assert len(compacted) == 1
+    text = compacted[0]["content"]
+    assert "deploy the project" in text
+    assert context_compact.SUMMARY_PREFIX in text
+    assert "done: x" in text
+    assert "[snipped" not in text
+    assert "earlier messages dropped" not in text
+
+
+def test_checkpoint_compact_truncates_when_user_message_exceeds_budget(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(context_compact, "TRANSCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(
+        context_compact, "summarize_history", lambda messages, client, model: "done"
+    )
+    messages = [{"role": "user", "content": "x" * 20000}]
+
+    compacted = context_compact.checkpoint_compact(
+        messages, object(), "test-model", budget=4000
+    )
+
+    assert len(compacted) == 1
+    assert len(compacted[0]["content"]) < 20000
+    assert "truncated" in compacted[0]["content"]
+
+
+def test_collect_real_user_messages_skips_summary_and_placeholders():
+    messages = [
+        {"role": "user", "content": "[Compacted]\nold summary"},
+        {"role": "user", "content": "[snipped 12 messages: bash×3]"},
+        {"role": "user", "content": "[5 earlier messages dropped to bound context size]"},
+        {"role": "user", "content": "real request"},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t"}]},
+    ]
+
+    users = context_compact.collect_real_user_messages(messages)
+
+    assert [context_compact.message_text(m) for m in users] == ["real request"]
+
+
+def test_compact_if_needed_soft_limit_does_not_call_model(monkeypatch):
+    """软水位只降级工具结果，不调模型、不产生压缩事件。"""
+    agent = object.__new__(comprehensive.ComprehensiveAgent)
+    agent.run_goal = "deploy"
+    degraded = [{"role": "user", "content": "degraded"}]
+
+    def fail_checkpoint(*args, **kwargs):
+        raise AssertionError("软水位不应调用摘要模型")
+
+    monkeypatch.setattr(context_manager, "checkpoint_compact", fail_checkpoint)
+    monkeypatch.setattr(
+        context_manager, "tool_result_budget", lambda messages, max_bytes=None: degraded
+    )
+    messages = [{"role": "user", "content": "x" * 40000}]
+
+    result = agent._compact_if_needed(messages)
+
+    assert result == degraded
+    assert agent._last_compaction is None
+
+
+def test_compact_if_needed_falls_back_to_fresh_window(monkeypatch):
+    """摘要调用失败时开新窗口，而不是继续带着超窗历史。"""
+    agent = object.__new__(comprehensive.ComprehensiveAgent)
+    agent.run_goal = "deploy the project"
+    agent.client = object()
+    agent.recovery = SimpleNamespace(current_model="test-model")
+
+    def broken_summary(*args, **kwargs):
+        raise RuntimeError("context window exceeded")
+
+    monkeypatch.setattr(context_manager, "checkpoint_compact", broken_summary)
+    messages = [
+        {"role": "user", "content": "deploy the project"},
+        {"role": "assistant", "content": "y" * 60000},
+    ]
+
+    result = agent._compact_if_needed(messages)
+
+    assert agent._last_compaction["status"] == "fresh_window"
+    assert "deploy the project" in result[0]["content"]
+    assert "[Compacted]" not in result[0]["content"]
+
+
+def test_compact_if_needed_emits_windowed_events(monkeypatch):
+    """每次硬压缩发出 started/finished 事件，窗口号递增。"""
+    agent = object.__new__(comprehensive.ComprehensiveAgent)
+    agent.run_goal = "deploy"
+    agent.client = object()
+    agent.recovery = SimpleNamespace(current_model="test-model")
+    agent._compaction_window = 0
+
+    monkeypatch.setattr(
+        context_manager,
+        "checkpoint_compact",
+        lambda messages, client, model, goal="": [{"role": "user", "content": "small"}],
+    )
+    messages = [{"role": "user", "content": "x" * 60000}]
+
+    agent._compact_if_needed(messages)
+    first = agent._compaction_events
+
+    assert [event["phase"] for event in first] == ["started", "finished"]
+    assert {event["window"] for event in first} == {1}
+
+    agent._compact_if_needed(messages)
+    second = agent._compaction_events
+
+    assert {event["window"] for event in second} == {2}
 
 
 def test_compact_if_needed_bounds_spiky_history(tmp_path, monkeypatch):
@@ -317,6 +437,14 @@ def test_record_usage_accumulates_and_estimates_cost():
     assert summary["input"] == 2_000_000
     assert summary["output"] == 200_000
     assert summary["est_cost_cny"] == 5.6
+
+
+def test_usage_summary_reports_compaction_count():
+    """压缩次数进入 run 汇总，done 事件可据此展示。"""
+    agent = _bare_agent()
+    agent._compaction_window = 3
+
+    assert agent._usage_summary()["compactions"] == 3
 
 
 def test_record_usage_ignores_response_without_usage():

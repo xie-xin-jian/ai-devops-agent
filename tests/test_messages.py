@@ -36,6 +36,9 @@ def test_serialize_visible_messages_keeps_only_text_dialogue():
 def test_serialize_visible_messages_skips_internal_messages():
     messages = [
         {"role": "user", "content": "[Compacted]\n\nsummary"},
+        {"role": "user", "content": "[snipped 12 messages: bash×3]"},
+        {"role": "user", "content": "[5 earlier messages dropped to bound context size]"},
+        {"role": "user", "content": "以下内容是对此前对话的压缩摘要，不是用户原话。\n\n## 本轮目标"},
         {"role": "user", "content": "<task_notification>done</task_notification>"},
         {"role": "user", "content": "visible question"},
     ]
