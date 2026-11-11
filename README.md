@@ -114,6 +114,8 @@ VITE_API_TOKEN=与后端 API_AUTH_TOKEN 相同的值
 
 > 该 Token 会打进浏览器产物。只适合本地或可信内网，不能当作公网多用户认证方案。
 
+界面形态：浅色桌面风格聊天页（消息气泡、底部输入条、可折叠的执行轨迹卡片），侧栏把会话按运维项目分组，未绑定项目的会话归入「其他对话」。
+
 ### 3.6 Docker Compose
 
 ```bash
@@ -293,7 +295,7 @@ confirmed  --进程重启-->  failed（带 interrupted 标记）
 
 设计要点：
 
-- **历史里只允许这一种压缩消息**。不再有 `[snipped ...]` 之类占位符——前端会把占位符当用户原话渲染。
+- **历史里只允许这一种压缩消息**。不再有 `[snipped ...]` 之类占位符——前端会把占位符当用户原话渲染。即便历史里残留旧版占位符，`serialize_visible_messages` 在序列化可见历史时还会再过滤一遍（压缩摘要、`<task_notification>`、`<cron_job>` 等）。
 - **目标钉死**：`run_goal` 取自 run 的第一条用户消息，压缩后钉在历史开头，且每轮重申到最后一条 user 消息尾部，防止长工具链之后模型跑偏。
 - **不摘要套摘要**：收集用户原话时排除旧摘要和内部消息，多次压缩不会逐层失真。
 - 压缩前先把完整历史写入 transcript（`DATA_DIR/.transcripts/`），原文可找回。
@@ -505,8 +507,8 @@ MCP 连接成功后动态追加 `mcp__{server}__{tool}`。
 | POST | `/api/chat/` | 非流式对话 |
 | POST | `/api/chat/stream` | SSE 流式对话 |
 | POST | `/api/chat/cancel` | 取消当前会话执行 |
-| GET | `/api/messages/` | 可见消息 |
-| GET | `/api/chat/sessions` | 会话列表 |
+| GET | `/api/messages/` | 可见消息（序列化时过滤压缩摘要、任务通知、cron 注入等内部消息） |
+| GET | `/api/chat/sessions` | 会话列表（含 `target_id`，客户端按项目分组） |
 | POST | `/api/chat/sessions/{session_id}/rename` | 重命名会话 |
 | POST | `/api/reset/` | 重置会话 |
 
@@ -650,7 +652,7 @@ PERSISTENCE_TEST_DATABASE_URL="postgresql+psycopg://ai_devops:change-me@127.0.0.
   python -m pytest tests/test_persistence_pg_integration.py -q
 ```
 
-覆盖范围：工具策略与路径约束、取消与消息配对、任务图状态、Cron 解析与调度、MCP JSON-RPC、上下文压缩边界、Session 持久化与 Run 恢复、原子写入。
+覆盖范围：工具策略与路径约束、取消与消息配对、任务图状态、Cron 解析与调度、MCP JSON-RPC、检查点压缩与降级路径、软水位短路、重复调用拦截、Session 持久化与 Run 恢复、原子写入。
 
 ### 评估
 
