@@ -16,6 +16,11 @@ on:
         required: false
         default: "0"
         type: string
+      regression_alpha:
+        description: Significance level for pass-rate regressions (needs >= 5 trials per side)
+        required: false
+        default: "0.05"
+        type: string
       fail_on_missing:
         description: Fail when a baseline case is absent from the candidate
         required: false
@@ -74,6 +79,7 @@ jobs:
             "$BASELINE" \
             "$CURRENT" \
             --tolerance "${{ inputs.tolerance }}" \
+            --regression-alpha "${{ inputs.regression_alpha }}" \
             --output eval-artifacts/comparison.json \
             --fail-on-regression \
             $MISSING_FLAG

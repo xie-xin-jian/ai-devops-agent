@@ -1,5 +1,6 @@
 """Evaluation runner, scoring, and approval policy tests."""
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from agent.evaluation.runner import (
     NullEvaluationStore,
     PostgresEvaluationStore,
     RunConfig,
+    _trial_target_name,
     write_report,
 )
 from agent.evaluation.scoring import TrialObservation, score_case
@@ -425,3 +427,117 @@ def test_runner_uses_judge_when_enabled(tmp_path):
     assert judge_score["status"] == "pass"
     assert report["results"][0]["judge_cost_cny"] == pytest.approx(0.002)
     assert report["judge_cost_cny"] == pytest.approx(0.002)
+
+
+class _VariableDelayAgent(_FakeAgent):
+    """Completes after a delay derived from the session id suffix."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        suffix = str(kwargs.get("session_id", "0"))[-6:]
+        self.delay = 0.01 * (int(suffix, 16) % 3 if suffix.isalnum() else 0)
+
+    def run_stream(self, prompt, cancel_event=None):
+        time.sleep(self.delay)
+        yield from super().run_stream(prompt, cancel_event)
+
+
+def _write_case(cases_dir, name):
+    (cases_dir / f"{name}.yaml").write_text(
+        f"""
+- id: {name}
+  category: core
+  prompt: check {name}
+  timeout_seconds: 10
+  max_turns: 3
+  approvals: auto_readonly
+  expect:
+    - run_completed
+""".strip(),
+        encoding="utf-8",
+    )
+
+
+def test_parallel_runner_collects_all_trials_deterministically(tmp_path):
+    cases_dir = tmp_path / "cases"
+    fixtures_dir = tmp_path / "fixtures"
+    cases_dir.mkdir()
+    fixtures_dir.mkdir()
+    _write_case(cases_dir, "alpha")
+    _write_case(cases_dir, "beta")
+    runner = EvalRunner(
+        RunConfig(
+            cases_dir=cases_dir,
+            fixtures_dir=fixtures_dir,
+            run_root=tmp_path / "run-parallel",
+            batch_id="batch-parallel",
+            trials_per_case=2,
+            parallel=2,
+        ),
+        store=NullEvaluationStore(),
+        agent_factory=_VariableDelayAgent,
+    )
+
+    report = runner.run()
+
+    assert report["trials"] == 4
+    assert report["passed"] == 4
+    assert [
+        (item["case_id"], item["trial_no"])
+        for item in report["results"]
+    ] == [
+        ("alpha", 1),
+        ("alpha", 2),
+        ("beta", 1),
+        ("beta", 2),
+    ]
+
+
+def test_stop_on_failure_forces_serial_execution(tmp_path):
+    cases_dir = tmp_path / "cases"
+    fixtures_dir = tmp_path / "fixtures"
+    cases_dir.mkdir()
+    fixtures_dir.mkdir()
+    for name in ("ok", "bad"):
+        (cases_dir / f"{name}.yaml").write_text(
+            f"""
+- id: {name}
+  category: core
+  prompt: check {name}
+  timeout_seconds: 10
+  max_turns: 3
+  approvals: auto_readonly
+  expect:
+    - answer_matches: 'never-matches'
+""".strip(),
+            encoding="utf-8",
+        )
+    runner = EvalRunner(
+        RunConfig(
+            cases_dir=cases_dir,
+            fixtures_dir=fixtures_dir,
+            run_root=tmp_path / "run-stop",
+            batch_id="batch-stop",
+            trials_per_case=1,
+            parallel=4,
+            stop_on_failure=True,
+        ),
+        store=NullEvaluationStore(),
+        agent_factory=_FakeAgent,
+    )
+
+    report = runner.run()
+
+    # Every case fails the regex assertion, so serial stop-on-failure keeps
+    # only the first executed case in the report.
+    assert len(report["results"]) == 1
+    assert report["failed"] == 1
+
+
+def test_trial_target_name_is_unique_per_trial():
+    name_1 = _trial_target_name("case/a b", 1, "eval_b_case_a_b_1_aa1111")
+    name_2 = _trial_target_name("case/a b", 2, "eval_b_case_a_b_2_bb2222")
+
+    assert name_1.startswith("eval-case_a_b-t1-")
+    assert name_2.startswith("eval-case_a_b-t2-")
+    assert name_1 != name_2

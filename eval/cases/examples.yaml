@@ -1,0 +1,36 @@
+# 示例评估用例：展示 case 的最小结构与常用规则。
+# 真实用例可按 category 拆分多个文件，文件名不影响用例 id。
+# 校验方式：python scripts/run_eval.py --validate-only
+
+- id: demo-inspect-service
+  category: core
+  topic: 只读巡检
+  severity: medium
+  prompt: 查看 demo-service 项目的 README 和日志，告诉我这个服务是做什么的、最近有没有异常。
+  fixture: demo-service
+  service: demo-service
+  timeout_seconds: 180
+  max_turns: 8
+  approvals: auto_readonly
+  expect:
+    - run_completed
+    - tool_called:
+        any_of: [target_read_file, read_target_file, bash]
+    - answer_max_chars: 4000
+  tags: [example, readonly]
+  notes: 只读路径：验证 fixture 复制、target 注册和只读工具放行。
+
+- id: demo-faq-style
+  category: faq
+  topic: 开放问答
+  severity: low
+  prompt: 用中文简要说明，排查一个服务无响应时应该按什么顺序检查。
+  timeout_seconds: 120
+  max_turns: 4
+  approvals: deny_all
+  judge_rubric: 回答需要覆盖进程状态、端口监听和日志三个层面，并给出可执行的命令示例。
+  expect:
+    - run_completed
+    - answer_max_chars: 4000
+  tags: [example, judge]
+  notes: 展示 judge_rubric：需要 run_eval.py 传 --judge 才会实际评分，否则该规则记 skip。

@@ -6,7 +6,7 @@
 
 > 设计取向：**治理优先于能力扩张**。工具数量、自治程度都刻意收着，把审批、审计、恢复语义做扎实。当前定位是单进程、单租户的可信环境工具，不是多副本生产平台。
 
-规模（当前代码）：45 个主 Agent 可见工具、18 张 PostgreSQL 表、5 个 Alembic 迁移、220 个测试通过 / 11 个跳过。
+规模（当前代码）：45 个主 Agent 可见工具、18 张 PostgreSQL 表、5 个 Alembic 迁移、229 个测试通过 / 11 个跳过。
 
 ---
 
@@ -642,7 +642,7 @@ Authorization: Bearer <token>
 ## 14. 测试与评估
 
 ```bash
-pytest -q          # 220 passed, 11 skipped
+pytest -q          # 229 passed, 11 skipped
 ```
 
 11 个跳过项是需要真实 PostgreSQL 的集成测试，设置后自动启用：
@@ -659,15 +659,20 @@ PERSISTENCE_TEST_DATABASE_URL="postgresql+psycopg://ai_devops:change-me@127.0.0.
 结果表结构在迁移 `0005` 中（`eval_batches` / `eval_trials` / `eval_tool_calls` / `eval_scores`）。试跑器会复制 fixture、创建隔离 Session、按用例策略自动审批、采集工具轨迹并评分。
 
 ```bash
-python scripts/check_eval_cases.py                      # 校验用例
 python scripts/run_eval.py --validate-only              # 只校验不调模型
-python scripts/run_eval.py --case inspect-disk-usage    # 跑单个用例
+python scripts/run_eval.py --case demo-inspect-service  # 跑单个用例
 python scripts/run_eval.py --category faq --judge       # 启用 LLM Judge
+python scripts/run_eval.py --parallel 4                 # 最多 4 个 trial 并发
 python scripts/run_eval.py --category core \
   --baseline eval/reports/baseline.json --fail-on-regression
 ```
 
-评估用例目录 `eval/` 默认不提交（见 `.gitignore`），只保留表结构和示例。干净 clone 上需要自己准备用例才能跑评估。
+关键参数：
+
+- `--trials`（默认 **3**）：每个用例的采样次数。回归判定是**显著性感知**的：两侧样本都 ≥ 5 时，用单侧双比例检验判断通过率下降是否超出统计噪声（`--regression-alpha`，默认 0.05），噪声内的下降不进回归列表、单独记入 `drops_within_noise`，比较报告里附 Wilson 95% 置信区间；样本不足时退回「数值下降 + tolerance」规则。`--trials 1` 等于关掉显著性判定。
+- `--parallel`（默认 1）：trial 级线程并发。同一用例的多个 trial 用带后缀的 target 名（`eval-<case>-t<N>-<hex>`）避免冲突；`--stop-on-failure` 与并发互斥，会强制串行。SQLite 评估库已加 30s busy timeout，高并发建议换 PostgreSQL 评估库。
+
+用例与 fixture 进版本控制：`eval/cases/examples.yaml` 是带注释的完整示例，`eval/fixtures/demo-service/` 是最小 fixture；运行产物（`eval/reports/`、`eval/.runtime/`、`eval/data/`）留在本地。干净 clone 可直接 `--validate-only` 验证。
 
 CI：`.github/workflows/ci.yml` 跑普通测试；`evaluation-regression.yml` 用 baseline/current 报告做回归门禁，接入方式见 `docs/evaluation-ci.md`。
 

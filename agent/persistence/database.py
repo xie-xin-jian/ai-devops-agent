@@ -43,7 +43,9 @@ def get_engine():
             connect_args={"connect_timeout": config.DB_CONNECT_TIMEOUT},
         )
     elif config.DATABASE_URL.startswith("sqlite"):
-        kwargs["connect_args"] = {"check_same_thread": False}
+        # check_same_thread: the eval runner and worker threads share the
+        # engine; timeout: tolerate concurrent writers on parallel trials.
+        kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
     _engine = sqlalchemy.create_engine(config.DATABASE_URL, **kwargs)
     return _engine
 

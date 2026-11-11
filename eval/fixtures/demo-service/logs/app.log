@@ -1,0 +1,6 @@
+2026-11-10 09:00:01 INFO  server listening on 0.0.0.0:8080
+2026-11-10 09:00:02 INFO  health check endpoint ready at /healthz
+2026-11-10 09:14:23 WARN  disk usage above 80% on /data
+2026-11-10 09:14:24 INFO  cleanup job reclaimed 2.1GB
+2026-11-10 10:02:11 ERROR failed to connect to upstream db (timeout after 3s)
+2026-11-10 10:02:12 INFO  retry succeeded on attempt 2

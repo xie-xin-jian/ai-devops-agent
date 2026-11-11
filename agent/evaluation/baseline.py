@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 import json
+import math
 from pathlib import Path
+
+
+# Below this many trials on either side, pass-rate differences are judged by
+# the numeric tolerance rule only: a z-test on tiny samples is meaningless.
+SIGNIFICANCE_MIN_SAMPLES = 5
+DEFAULT_ALPHA = 0.05
+_WILSON_Z = 1.96
 
 
 def load_report(path: str | Path) -> dict:
@@ -21,6 +29,51 @@ def _percentile(values: list[float], ratio: float) -> float:
     ordered = sorted(values)
     index = min(len(ordered) - 1, int(round((len(ordered) - 1) * ratio)))
     return ordered[index]
+
+
+def wilson_ci(passed: int, trials: int) -> list[float]:
+    """Wilson score interval for a pass rate, clamped to [0, 1]."""
+    if trials <= 0:
+        return [0.0, 1.0]
+    p = passed / trials
+    z2 = _WILSON_Z * _WILSON_Z
+    denom = 1 + z2 / trials
+    center = (p + z2 / (2 * trials)) / denom
+    half = (
+        _WILSON_Z
+        * math.sqrt(p * (1 - p) / trials + z2 / (4 * trials * trials))
+        / denom
+    )
+    return [
+        round(max(0.0, center - half), 4),
+        round(min(1.0, center + half), 4),
+    ]
+
+
+def lower_tail_p_value(
+    passed_a: int,
+    trials_a: int,
+    passed_b: int,
+    trials_b: int,
+) -> float:
+    """One-sided p-value that rate A is genuinely lower than rate B.
+
+    Pooled two-proportion z-test; returns 1.0 when A is not below B or
+    when either sample is empty, so callers can compare against alpha
+    without special cases.
+    """
+    if trials_a <= 0 or trials_b <= 0:
+        return 1.0
+    rate_a = passed_a / trials_a
+    rate_b = passed_b / trials_b
+    if rate_a >= rate_b:
+        return 1.0
+    pooled = (passed_a + passed_b) / (trials_a + trials_b)
+    se = math.sqrt(pooled * (1 - pooled) * (1 / trials_a + 1 / trials_b))
+    if se <= 0:
+        return 0.0
+    z = (rate_a - rate_b) / se
+    return 0.5 * math.erfc(-z / math.sqrt(2))
 
 
 def _failed_rules(result: dict) -> set[str]:
@@ -47,6 +100,7 @@ def _case_summary(results: list[dict]) -> dict:
         "trials": trials,
         "passed": passed,
         "pass_rate": passed / trials if trials else 0.0,
+        "pass_rate_ci95": wilson_ci(passed, trials),
         "cost_cny": sum(
             float(item.get("cost_cny") or 0)
             + float(item.get("judge_cost_cny") or 0)
@@ -96,6 +150,7 @@ def _overall(report: dict) -> dict:
         "trials": trials,
         "passed": passed,
         "pass_rate": passed / trials if trials else 0.0,
+        "pass_rate_ci95": wilson_ci(passed, trials),
         "agent_cost_cny": sum(
             float(item.get("cost_cny") or 0)
             for item in results
@@ -121,9 +176,20 @@ def compare_reports(
     current: dict,
     *,
     tolerance: float = 0.0,
+    alpha: float = DEFAULT_ALPHA,
+    min_samples: int = SIGNIFICANCE_MIN_SAMPLES,
 ) -> dict:
-    """Compare per-case pass rates with an optional allowed regression."""
+    """Compare per-case pass rates with significance-aware gating.
+
+    With enough trials on both sides (``min_samples``), a pass-rate drop only
+    counts as a regression when a one-sided two-proportion z-test rejects the
+    no-regression hypothesis at ``alpha``; drops inside statistical noise are
+    reported separately as ``drops_within_noise``. With too few samples the
+    numeric tolerance rule applies (a drop beyond ``tolerance`` is a
+    regression), matching the pre-statistical behaviour.
+    """
     tolerance = max(0.0, float(tolerance))
+    alpha = min(1.0, max(0.0, float(alpha)))
     baseline_cases = _index_cases(baseline)
     current_cases = _index_cases(current)
     common_ids = sorted(set(baseline_cases) & set(current_cases))
@@ -131,6 +197,7 @@ def compare_reports(
     regressions = []
     improvements = []
     rule_regressions = []
+    drops_within_noise = []
     for case_id in common_ids:
         before = baseline_cases[case_id]
         after = current_cases[case_id]
@@ -140,13 +207,44 @@ def compare_reports(
         recovered_rules = sorted(
             set(before["failed_rules"]) - set(after["failed_rules"])
         )
+        numeric_regression = (
+            after["pass_rate"] + tolerance < before["pass_rate"]
+        )
+        numeric_improvement = (
+            after["pass_rate"] > before["pass_rate"] + tolerance
+        )
+        enough_samples = (
+            min(before["trials"], after["trials"]) >= min_samples
+        )
+        if enough_samples:
+            regression_p = lower_tail_p_value(
+                after["passed"], after["trials"],
+                before["passed"], before["trials"],
+            )
+            improvement_p = lower_tail_p_value(
+                before["passed"], before["trials"],
+                after["passed"], after["trials"],
+            )
+            significance = (
+                "significant" if regression_p < alpha else "within-noise"
+            )
+        else:
+            regression_p = 1.0
+            improvement_p = 1.0
+            significance = "insufficient-samples"
         item = {
             "case_id": case_id,
             "category": after["category"] or before["category"],
             "severity": after["severity"] or before["severity"],
             "baseline_pass_rate": before["pass_rate"],
+            "baseline_pass_rate_ci95": before["pass_rate_ci95"],
             "current_pass_rate": after["pass_rate"],
+            "current_pass_rate_ci95": after["pass_rate_ci95"],
             "pass_rate_delta": after["pass_rate"] - before["pass_rate"],
+            "baseline_trials": before["trials"],
+            "current_trials": after["trials"],
+            "significance": significance,
+            "regression_p_value": round(regression_p, 4),
             "cost_delta_cny": after["cost_cny"] - before["cost_cny"],
             "duration_delta_ms": (
                 after["avg_duration_ms"] - before["avg_duration_ms"]
@@ -157,9 +255,14 @@ def compare_reports(
             "new_failed_rules": new_failed_rules,
             "recovered_rules": recovered_rules,
         }
-        if after["pass_rate"] + tolerance < before["pass_rate"]:
-            regressions.append(item)
-        elif after["pass_rate"] > before["pass_rate"] + tolerance:
+        if numeric_regression:
+            if enough_samples and regression_p >= alpha:
+                drops_within_noise.append(item)
+            else:
+                regressions.append(item)
+        elif numeric_improvement and (
+            not enough_samples or improvement_p < alpha
+        ):
             improvements.append(item)
         if new_failed_rules:
             rule_regressions.append(item)
@@ -197,10 +300,13 @@ def compare_reports(
         "baseline_batch_id": baseline.get("batch_id", ""),
         "current_batch_id": current.get("batch_id", ""),
         "tolerance": tolerance,
+        "alpha": alpha,
+        "min_samples": min_samples,
         "overall": overall,
         "regressions": regressions,
         "improvements": improvements,
         "rule_regressions": rule_regressions,
+        "drops_within_noise": drops_within_noise,
         "missing_cases": sorted(set(baseline_cases) - set(current_cases)),
         "new_cases": sorted(set(current_cases) - set(baseline_cases)),
         "high_severity_regressions": [
@@ -225,7 +331,11 @@ def has_regressions(
 
 
 __all__ = [
+    "DEFAULT_ALPHA",
+    "SIGNIFICANCE_MIN_SAMPLES",
     "compare_reports",
     "has_regressions",
     "load_report",
+    "lower_tail_p_value",
+    "wilson_ci",
 ]

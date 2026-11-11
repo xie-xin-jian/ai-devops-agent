@@ -37,7 +37,24 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-id", default=batch_id)
     parser.add_argument("--label", default="")
     parser.add_argument("--model", default="")
-    parser.add_argument("--trials", type=int, default=1)
+    parser.add_argument(
+        "--trials",
+        type=int,
+        default=3,
+        help=(
+            "trials per case (default 3). Single-trial runs disable "
+            "significance-aware regression gating"
+        ),
+    )
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        help=(
+            "run up to N trials concurrently (default 1 = serial). "
+            "Use a PostgreSQL evaluation database for high concurrency"
+        ),
+    )
     parser.add_argument("--category", action="append", default=[])
     parser.add_argument("--case", action="append", default=[])
     parser.add_argument("--tag", action="append", default=[])
@@ -60,6 +77,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--judge-threshold", type=float, default=0.7)
     parser.add_argument("--baseline", default="")
     parser.add_argument("--baseline-tolerance", type=float, default=0.0)
+    parser.add_argument(
+        "--regression-alpha",
+        type=float,
+        default=0.05,
+        help=(
+            "significance level for the pass-rate regression test "
+            "(needs at least 5 trials per side)"
+        ),
+    )
     parser.add_argument("--comparison-output", default="")
     parser.add_argument("--fail-on-regression", action="store_true")
     parser.add_argument("--fail-on-missing", action="store_true")
@@ -125,6 +151,7 @@ def main() -> int:
         label=args.label,
         model_id=args.model,
         trials_per_case=max(1, args.trials),
+        parallel=max(1, args.parallel),
         categories=tuple(args.category),
         case_ids=tuple(args.case),
         tags=tuple(args.tag),
@@ -147,6 +174,8 @@ def main() -> int:
     selection = {
         "batch_id": args.batch_id,
         "cases": len(selected),
+        "trials_per_case": config.trials_per_case,
+        "parallel": config.parallel,
         "planned_trials": len(selected) * config.trials_per_case,
         "by_category": {
             category: sum(
@@ -239,6 +268,7 @@ def main() -> int:
             baseline_report,
             report,
             tolerance=args.baseline_tolerance,
+            alpha=args.regression_alpha,
         )
         comparison_path = _absolute(
             args.comparison_output
@@ -250,6 +280,7 @@ def main() -> int:
             "regressions": len(comparison["regressions"]),
             "improvements": len(comparison["improvements"]),
             "rule_regressions": len(comparison["rule_regressions"]),
+            "drops_within_noise": len(comparison["drops_within_noise"]),
             "missing_cases": comparison["missing_cases"],
             "new_cases": comparison["new_cases"],
             "high_severity_regressions": len(

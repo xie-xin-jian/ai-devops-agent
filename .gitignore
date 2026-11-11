@@ -30,9 +30,11 @@ build/
 .task_outputs/
 .worktrees/
 
-# 评估用例库先留在本地（只提交评估结果的表结构）
-eval/
-scripts/check_eval_cases.py
+# 评估：用例与 fixture 进版本控制，运行产物留在本地
+/eval/.runtime/
+/eval/reports/
+/eval/data/
+!eval/fixtures/**/*.log
 
 # 迁移学习记录：只留在本地
 docs/pg-learning-notes.md

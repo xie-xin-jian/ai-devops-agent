@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
@@ -39,6 +40,7 @@ class RunConfig:
     label: str = ""
     model_id: str = ""
     trials_per_case: int = 1
+    parallel: int = 1
     categories: tuple[str, ...] = ()
     case_ids: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
@@ -295,6 +297,12 @@ def _within(root: Path, path: Path) -> bool:
     return resolved == resolved_root or resolved.is_relative_to(resolved_root)
 
 
+def _trial_target_name(case_id: str, trial_no: int, session_id: str) -> str:
+    """Unique per-trial target name so parallel trials never collide."""
+    suffix = session_id[-6:] if len(session_id) >= 6 else uuid.uuid4().hex[:6]
+    return f"eval-{_safe_name(case_id)}-t{trial_no}-{suffix}"
+
+
 @contextmanager
 def _isolated_runtime(run_root: Path):
     """Keep fixture and backup files inside one disposable directory."""
@@ -328,6 +336,7 @@ class EvalRunner:
         self.agent_factory = agent_factory
         self.judge_factory = judge_factory
         self._judge: EvaluationJudge | None = None
+        self._judge_lock = threading.Lock()
         self.cases: list[EvalCase] = []
 
     def load(self) -> list[EvalCase]:
@@ -384,30 +393,37 @@ class EvalRunner:
             finished_at=time.time(),
         )
         batch_error = ""
+        parallel = max(1, int(effective.parallel or 1))
+        if effective.stop_on_failure:
+            # Ordered early exit requires serial execution.
+            parallel = 1
         try:
             if config.DATABASE_URL.startswith("sqlite"):
                 from agent.persistence import database
 
                 database.create_all()
             with _isolated_runtime(effective.run_root):
-                for case in cases:
-                    for trial_no in range(1, effective.trials_per_case + 1):
-                        item = self._run_trial(
-                            effective,
-                            case,
-                            trial_no,
-                        )
-                        result.trials.append(item)
-                        if (
-                            effective.stop_on_failure
-                            and not item.get("passed")
-                        ):
-                            batch_error = (
-                                f"stopped after failed case {case.id}"
+                if parallel > 1:
+                    self._run_parallel(effective, cases, result)
+                else:
+                    for case in cases:
+                        for trial_no in range(1, effective.trials_per_case + 1):
+                            item = self._run_trial(
+                                effective,
+                                case,
+                                trial_no,
                             )
+                            result.trials.append(item)
+                            if (
+                                effective.stop_on_failure
+                                and not item.get("passed")
+                            ):
+                                batch_error = (
+                                    f"stopped after failed case {case.id}"
+                                )
+                                break
+                        if batch_error:
                             break
-                    if batch_error:
-                        break
         except Exception as exc:
             batch_error = str(exc)
             raise
@@ -422,6 +438,35 @@ class EvalRunner:
         report["label"] = effective.label
         report["model_id"] = effective.model_id
         return report
+
+    def _run_parallel(
+        self,
+        config: RunConfig,
+        cases: list[EvalCase],
+        result: BatchResult,
+    ) -> None:
+        """Run trials concurrently and collect them in deterministic order."""
+        jobs = [
+            (case, trial_no)
+            for case in cases
+            for trial_no in range(1, config.trials_per_case + 1)
+        ]
+        with ThreadPoolExecutor(
+            max_workers=config.parallel,
+            thread_name_prefix="eval-trial",
+        ) as pool:
+            futures = [
+                pool.submit(self._run_trial, config, case, trial_no)
+                for case, trial_no in jobs
+            ]
+            for future in as_completed(futures):
+                result.trials.append(future.result())
+        result.trials.sort(
+            key=lambda item: (
+                str(item.get("case_id") or ""),
+                int(item.get("trial_no") or 0),
+            )
+        )
 
     def _run_trial(
         self,
@@ -462,7 +507,7 @@ class EvalRunner:
                 if (target_dir / "logs" / "app.log").is_file():
                     log_path = "logs/app.log"
                 target = TargetStore().create({
-                    "name": f"eval-{case.id}",
+                    "name": _trial_target_name(case.id, trial_no, session_id),
                     "root": str(target_dir),
                     "service": case.service,
                     "log_path": log_path,
@@ -562,13 +607,15 @@ class EvalRunner:
         observation: TrialObservation,
     ) -> dict:
         if self._judge is None:
-            if self.judge_factory is not None:
-                self._judge = self.judge_factory()
-            else:
-                self._judge = LLMJudge(
-                    model_id=config.judge_model_id or config.model_id,
-                    threshold=config.judge_threshold,
-                )
+            with self._judge_lock:
+                if self._judge is None:
+                    if self.judge_factory is not None:
+                        self._judge = self.judge_factory()
+                    else:
+                        self._judge = LLMJudge(
+                            model_id=config.judge_model_id or config.model_id,
+                            threshold=config.judge_threshold,
+                        )
         return self._judge.evaluate(case, observation).to_score()
 
     def _execute(

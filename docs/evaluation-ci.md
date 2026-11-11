@@ -45,7 +45,12 @@ jobs:
 
 The reusable workflow fails when:
 
-- any shared case has a lower pass rate than the baseline;
+- any shared case has a pass-rate drop that exceeds the baseline beyond
+  statistical noise. With at least 5 trials per side the gate runs a
+  one-sided two-proportion test at `regression_alpha` (default 0.05);
+  drops inside the noise band are reported as `drops_within_noise` and do
+  not fail the gate. With fewer samples any numeric drop (beyond
+  `tolerance`) fails;
 - `fail_on_missing` is enabled and a baseline case is absent;
 - either artifact contains no JSON report.
 

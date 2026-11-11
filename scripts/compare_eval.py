@@ -22,6 +22,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("current", help="current report JSON")
     parser.add_argument("--output", default="")
     parser.add_argument("--tolerance", type=float, default=0.0)
+    parser.add_argument(
+        "--regression-alpha",
+        type=float,
+        default=0.05,
+        help=(
+            "significance level for pass-rate regressions; drops within "
+            "noise do not fail the gate when both sides have >= 5 trials"
+        ),
+    )
     parser.add_argument("--fail-on-regression", action="store_true")
     parser.add_argument("--fail-on-missing", action="store_true")
     return parser.parse_args()
@@ -40,6 +49,7 @@ def main() -> int:
             load_report(args.baseline),
             load_report(args.current),
             tolerance=args.tolerance,
+            alpha=args.regression_alpha,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2))
@@ -64,6 +74,7 @@ def main() -> int:
         "regressions": len(comparison["regressions"]),
         "improvements": len(comparison["improvements"]),
         "rule_regressions": len(comparison["rule_regressions"]),
+        "drops_within_noise": len(comparison["drops_within_noise"]),
         "missing_cases": comparison["missing_cases"],
         "new_cases": comparison["new_cases"],
         "high_severity_regressions": len(
