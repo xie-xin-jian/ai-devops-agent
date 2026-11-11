@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import {
   ArrowUp,
-  ChevronDown,
+  ChevronRight,
   Folder,
+  Loader2,
   Plus,
   Plug,
   Square,
+  Terminal,
   Trash2,
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
@@ -54,10 +56,7 @@ export default function Chat() {
               return (
                 <div key={`${message.role}-${index}`}>
                   {startsNewAssistantTurn && <AgentResponseDivider />}
-                  {withTools
-                    && toolHistory.map((record, recordIndex) => (
-                      <ToolCard key={`${record.turn}-${recordIndex}`} record={record} />
-                    ))}
+                  {withTools && <ToolActivity records={toolHistory} />}
                   {isUser ? (
                     <UserBubble text={message.content} />
                   ) : (
@@ -69,17 +68,17 @@ export default function Chat() {
 
             {isStreaming && (
               <div>
-                {toolHistory.map((record, recordIndex) => (
-                  <ToolCard key={`${record.turn}-${recordIndex}`} record={record} />
-                ))}
+                {toolHistory.length > 0 && (
+                  <ToolActivity records={toolHistory} streaming />
+                )}
                 {liveText ? (
                   <AssistantText text={liveText} streaming />
-                ) : (
+                ) : toolHistory.length === 0 ? (
                   <div className="mb-4 flex items-center gap-2 text-[13px] text-text-tertiary">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-text-tertiary" />
                     {currentStatus || 'thinking'}
                   </div>
-                )}
+                ) : null}
               </div>
             )}
           </div>
@@ -294,7 +293,71 @@ function UserBubble({ text }: { text: string }) {
   )
 }
 
-function ToolCard({ record }: { record: ToolCallRecord }) {
+function ToolActivity({
+  records,
+  streaming = false,
+}: {
+  records: ToolCallRecord[]
+  streaming?: boolean
+}) {
+  const [expanded, setExpanded] = useState(false)
+  if (records.length === 0) return null
+
+  const active = [...records]
+    .reverse()
+    .find((record) => record.status === 'running' || record.status === 'pending')
+  const latest = records[records.length - 1]
+  const current = active || latest
+  const command = toolCommand(current.input)
+  const duration = records.reduce(
+    (total, record) => total + (record.duration_ms || 0),
+    0
+  )
+  const failed = records.some((record) => record.status === 'error')
+
+  return (
+    <div className="tool-activity mb-4">
+      <button
+        onClick={() => setExpanded((value) => !value)}
+        className="tool-activity-head"
+      >
+        {streaming && active ? (
+          <Loader2 size={12} className="shrink-0 animate-spin text-text-tertiary" />
+        ) : (
+          <Terminal size={12} className="shrink-0 text-text-tertiary" />
+        )}
+        <span className="shrink-0 text-[11.5px] font-medium text-text-secondary">
+          {active ? '正在执行' : failed ? '执行完成（有错误）' : '执行完成'}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-secondary">
+          {command}
+        </span>
+        <span className="hidden shrink-0 text-[10px] text-text-tertiary sm:inline">
+          {records.length > 1 ? `${records.length} 步` : ''}
+          {duration > 0 ? ` · ${formatDuration(duration)}` : ''}
+        </span>
+        <ChevronRight
+          size={11}
+          className={`shrink-0 text-text-tertiary transition-transform ${
+            expanded ? 'rotate-90' : ''
+          }`}
+        />
+      </button>
+      {expanded && (
+        <div className="tool-activity-body">
+          {records.map((record, index) => (
+            <ToolActivityRow
+              key={`${record.turn}-${index}-${record.tool}`}
+              record={record}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ToolActivityRow({ record }: { record: ToolCallRecord }) {
   const [expanded, setExpanded] = useState(false)
   const command = toolCommand(record.input)
   const all = (record.output || '').replace(/\s+$/, '').split('\n')
@@ -308,36 +371,35 @@ function ToolCard({ record }: { record: ToolCallRecord }) {
 
   const running = record.status === 'running' || record.status === 'pending'
   const failed = record.status === 'error'
-  const dotClass = running
-    ? 'animate-pulse bg-status-warning'
-    : failed
-      ? 'bg-status-error'
-      : 'bg-status-success'
-  const verb = running ? 'Running' : 'Ran'
+  const verb = running ? 'Running' : failed ? 'Failed' : 'Ran'
 
   return (
-    <div className="mb-3 overflow-hidden rounded-xl border border-border-secondary">
+    <div className="tool-activity-row">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg-secondary"
+        className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
       >
-        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
-        <span className="shrink-0 text-[12px] font-medium text-text-secondary">{verb}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-text-primary">
+        <ChevronRight
+          size={10}
+          className={`shrink-0 text-text-tertiary transition-transform ${
+            expanded ? 'rotate-90' : ''
+          }`}
+        />
+        <span className={`shrink-0 text-[10.5px] ${
+          failed ? 'text-status-error' : running ? 'text-status-warning' : 'text-text-tertiary'
+        }`}>{verb}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-secondary">
           {command}
         </span>
-        {hasOutput && (
-          <ChevronDown
-            size={12}
-            className={`shrink-0 text-text-tertiary transition-transform ${
-              expanded ? 'rotate-180' : ''
-            }`}
-          />
+        {record.duration_ms !== undefined && (
+          <span className="shrink-0 font-mono text-[9.5px] text-text-tertiary">
+            {formatDuration(record.duration_ms)}
+          </span>
         )}
       </button>
-      {hasOutput && (
+      {hasOutput && expanded && (
         <pre
-          className={`border-t border-border-secondary bg-bg-secondary px-3 py-2 font-mono text-[11.5px] leading-[1.65] text-text-secondary ${
+          className={`mx-2 mb-2 rounded-md border border-border-secondary bg-bg-primary px-2.5 py-2 font-mono text-[10.5px] leading-[1.6] text-text-secondary ${
             expanded ? 'max-h-80 overflow-auto' : ''
           }`}
         >
@@ -346,13 +408,18 @@ function ToolCard({ record }: { record: ToolCallRecord }) {
           {tailLines.length > 0 ? `\n${tailLines.join('\n')}` : ''}
         </pre>
       )}
-      {!hasOutput && !running && (
-        <div className="border-t border-border-secondary px-3 py-1.5 font-mono text-[11.5px] text-text-tertiary">
+      {!hasOutput && !running && expanded && (
+        <div className="px-6 pb-1.5 font-mono text-[10px] text-text-tertiary">
           (no output)
         </div>
       )}
     </div>
   )
+}
+
+function formatDuration(value: number) {
+  if (value < 1000) return `${value}ms`
+  return `${(value / 1000).toFixed(1)}s`
 }
 
 function ApprovalPanel({

@@ -148,6 +148,45 @@ pre code {
     0 10px 36px rgba(0, 0, 0, 0.18);
 }
 
+.tool-activity {
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.tool-activity:hover {
+  background: color-mix(in srgb, var(--bg-secondary) 72%, transparent);
+}
+
+.tool-activity-head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  text-align: left;
+}
+
+.tool-activity-body {
+  margin: 0 7px 7px;
+  overflow: hidden;
+  border: 1px solid var(--border-secondary);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.tool-activity-row + .tool-activity-row {
+  border-top: 1px solid var(--border-secondary);
+}
+
+.tool-activity-row > button:hover {
+  background: color-mix(in srgb, var(--bg-active) 72%, transparent);
+}
+
 .markdown-body > :first-child {
   margin-top: 0;
 }
