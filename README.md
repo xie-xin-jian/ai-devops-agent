@@ -596,7 +596,8 @@ Authorization: Bearer <token>
 | `CONTEXT_BYTES_BUDGET` | 120000 | 硬上限 |
 | `PERSIST_THRESHOLD` | 8000 | 工具结果落盘阈值 |
 | `HISTORY_TOOL_LIMIT` | 6000 | 预览长度 |
-| `KEEP_RECENT_TOOL_RESULTS` | 6 | 微压缩保留的最近结果数 |
+| `CONTEXT_SOFT_LIMIT` | 30000 | 软水位，只降级工具结果 |
+| `REPEAT_GUARD_LIMIT` | 3 | 同一调用重复执行几次后拦截 |
 | `DEFAULT_MAX_TOKENS` | 8000 | 单次输出预算 |
 | `ESCALATED_MAX_TOKENS` | 16000 | 截断后扩容值 |
 | `MAX_RETRIES` | 3 | 429 重试次数 |
