@@ -6,7 +6,7 @@
 
 > 设计取向：**治理优先于能力扩张**。工具数量、自治程度都刻意收着，把审批、审计、恢复语义做扎实。当前定位是单进程、单租户的可信环境工具，不是多副本生产平台。
 
-规模（当前代码）：45 个主 Agent 可见工具、18 张 PostgreSQL 表、5 个 Alembic 迁移、206 个测试通过 / 11 个跳过。
+规模（当前代码）：45 个主 Agent 可见工具、18 张 PostgreSQL 表、5 个 Alembic 迁移、220 个测试通过 / 11 个跳过。
 
 ---
 
@@ -154,7 +154,7 @@ conda create -y -p ./pglocal -c conda-forge --override-channels postgresql=16
 │  pipeline.run_stream():                                       │
 │    压缩 → 组 system prompt / 工具池 → 调模型 → 执行工具 → 回填  │
 │      ├─ context_manager   系统提示、记忆注入、缓存友好布局      │
-│      ├─ context_compact   预算、微压缩、裁剪、摘要              │
+│      ├─ context_compact   预算、检查点压缩、裁剪、摘要          │
 │      ├─ tool_loop         策略判定、重定向、审批、模型调用      │
 │      └─ error_recovery    429 / 529 / 超长 / 输出上限           │
 └───────────────────────┬───────────────────────────────────────┘
@@ -182,11 +182,11 @@ conda create -y -p ./pglocal -c conda-forge --override-channels postgresql=16
 | `agent/core/pipeline.py` | 推理循环、事件产出、取消与收尾 | `run_stream` |
 | `agent/core/tool_loop.py` | 策略判定、审批、工具执行、模型调用 | `_execute_tool_blocks` |
 | `agent/core/context_manager.py` | 系统提示组装、记忆召回、压缩调度 | `_compact_if_needed` |
-| `agent/core/context_compact.py` | 落盘、预算、微压缩、裁剪、摘要 | `tool_result_budget` 等 |
+| `agent/core/context_compact.py` | 落盘、预算、检查点压缩、裁剪、摘要 | `checkpoint_compact` 等 |
 | `agent/core/error_recovery.py` | 退避、降级、超长恢复、输出扩容 | `call_model_with_recovery` |
 | `agent/tools/registry.py` | Schema + Handler 双注册表 | `ToolRegistry` |
 | `agent/tools/policy.py` | 每个工具的风险与审批声明 | `get_tool_policy` |
-| `agent/orchestration/` | 任务图、Cron、后台任务、审批与执行 | 见第 5.4、9 节 |
+| `agent/orchestration/` | 任务图、Cron、后台任务、审批与执行 | 见第 5.5、9 节 |
 | `agent/persistence/` | SQLAlchemy 模型与仓储 | `models.py` |
 | `frontend/src/` | React 单页应用（无 router，store 切视图） | `store/useAppStore.ts` |
 
@@ -196,7 +196,7 @@ conda create -y -p ./pglocal -c conda-forge --override-channels postgresql=16
 2. `get_or_create_session(session_id)`：内存命中直接用；否则从 `sessions/messages` 还原历史并重建 Agent。
 3. 取 `session["run_lock"]`，同一会话串行；`cancel_event.clear()`。
 4. `Pipeline` 分配 `run_id`，`create_run` 落库，追加 user 消息（同时增量同步到 `messages` 表）。
-5. 每轮：发 `status` → 估算大小并按需压缩 → `thinking` → 组装工具 schema 与 system prompt → 调模型。
+5. 每轮：发 `status` → 估算大小并按需压缩（过硬水位时发 `compaction` 事件并写审计）→ `thinking` → 组装工具 schema 与 system prompt → 调模型。
 6. 模型返回 `tool_use`：`evaluate_tool_policy` 判定。
    - 只读：直接执行，审计 `policy.allowed`。
    - `bash` 且命中专用工具规则：不执行、不建审批，直接回 `Redirected: use xxx`。
@@ -239,7 +239,16 @@ this case, retry bash with the command prefixed by `force:`.
 
 规则表在 `agent/tools/shell.py` 的 `BASH_REDIRECT_RULES`；`force:` 是显式逃生门。含 `&&` 或 `;` 的复合命令不做重定向。
 
-### 5.4 审批闭环
+### 5.4 重复调用拦截
+
+同一 run 内，**同名同参数**的调用执行到第 3 次会被拦下，返回「换方法」的提示而不是继续执行——模型原地绕圈时不再陪着烧预算。细节：
+
+- 只统计**真正执行过**的调用；被策略拒绝、被重定向、等待审批未执行的不计数。
+- 参数比较按规范化 JSON，忽略键顺序。
+- 轮询类观察工具豁免（`list_background_tasks`、`list_tasks`、`get_task`），否则后台任务查询会被误拦。
+- 拦截写 `loop.blocked` 审计事件。
+
+### 5.5 审批闭环
 
 ```text
 pending    --confirm-->  confirmed  --执行成功--> executed
@@ -254,32 +263,51 @@ confirmed  --进程重启-->  failed（带 interrupted 标记）
 - 批准后执行结果写回同一个 run，不需要用户再发一条消息。
 - 崩溃时只处理 `confirmed` 的动作；仍是 `pending` 的动作重启后还能通过 API 确认，此时没有等待者，会直接执行并触发一次会话续跑，但已中断的 run 本身不会恢复。
 
-### 5.5 工具结果落盘
+### 5.6 工具结果落盘
 
 单个结果超过 `PERSIST_THRESHOLD = 8000` 字符时，完整内容写到 `DATA_DIR/.task_outputs/tool-results/`，上下文里放路径 + 头尾 `HISTORY_TOOL_LIMIT = 6000` 字符的预览。模型需要细节时可以再读文件，而不是把 10 万字符塞进下一轮。
 
 ---
 
-## 6. 上下文与缓存
+## 6. 上下文与压缩
 
-### 6.1 四层预算
+### 6.1 轮边界压缩链
 
-`context_manager._compact_if_needed` 的实际顺序：
+`context_manager._compact_if_needed` 每轮检查一次，按估算大小分三档：
 
-| 层 | 触发条件 | 动作 |
-|---|---|---|
-| `tool_result_budget` | 每轮 | 所有工具结果合计超过 60000 字符时，从最大的开始落盘、替换为「路径 + 预览」，直到总量回到预算内 |
-| `micro_compact` | 估算大小 > `CONTEXT_LIMIT = 50000` | 除最近 6 个工具结果外，其余替换为一行摘要 |
-| `snip_compact` | 仍 > 50000 | 消息数超过 50 时按配对边界裁掉中段 |
-| `trim_by_size` | 每轮兜底 | 超过 `CONTEXT_BYTES_BUDGET = 120000` 时强制裁剪 |
+| 估算大小 | 动作 |
+|---|---|
+| ≤ `CONTEXT_SOFT_LIMIT = 30000` | 不做任何事 |
+| 30000 ~ `CONTEXT_LIMIT = 50000`（软水位） | `tool_result_budget` 把合计超标的工具结果落盘、替换为「路径 + 预览」。幂等操作，不改消息条数，前缀保持稳定 |
+| > 50000（硬水位） | **检查点压缩**：用一条交接消息整体替换历史 |
 
-另有两条显式路径：`compact` 工具调用 `compact_history` 做 LLM 摘要；模型报 prompt too long 时走 `error_recovery` 的 `reactive_compact`。
+检查点压缩（`checkpoint_compact`）只产出一条消息，按固定结构重建：
+
+```text
+[固定前缀：声明这是压缩摘要，不是用户原话，与原话冲突时以原话为准]
+## 本轮目标        ← run 开始时的用户请求，压缩后也不丢
+## 最近用户原话     ← 按预算从新到旧保留（COMPACT_USER_MESSAGE_BUDGET = 12000）
+## 交接摘要         ← LLM 生成，固定七节：Goal / Done / Decisions / Constraints /
+                    Files touched / Failed attempts（已失败的尝试，不要重试）/ Remaining
+```
+
+设计要点：
+
+- **历史里只允许这一种压缩消息**。不再有 `[snipped ...]` 之类占位符——前端会把占位符当用户原话渲染。
+- **目标钉死**：`run_goal` 取自 run 的第一条用户消息，压缩后钉在历史开头，且每轮重申到最后一条 user 消息尾部，防止长工具链之后模型跑偏。
+- **不摘要套摘要**：收集用户原话时排除旧摘要和内部消息，多次压缩不会逐层失真。
+- 压缩前先把完整历史写入 transcript（`DATA_DIR/.transcripts/`），原文可找回。
+- 压缩只通过事件暴露，不写进历史；结果同时写一条 `run.compaction` 审计。
+
+**降级路径**：摘要调用失败时不带着超窗历史继续调 API，直接 `fresh_window` 开新窗口——不调模型，只保留目标 + 最近用户原话。压缩后估算大小仍超过 50000，再 `trim_by_size` 按字节硬裁剪（裁剪点避开 tool_use / tool_result 配对边界）。
+
+`compact` 工具触发的显式压缩走同一条检查点路径。
 
 ### 6.2 为什么不是「每轮都压缩」
 
-`micro_compact` 会改写中段历史。前缀一变，prompt cache 全部失效，成本和延迟都会上去。所以只有真的越过水位才做有损压缩，`tool_result_budget` 和 `trim_by_size` 这类不改变稳定前缀的操作才可以每轮跑。
+检查点压缩会整体重写历史，前缀一变 prompt cache 全部失效，成本和延迟都会上去。所以软水位只做幂等的结果降级，真正的「换本子」只在过硬水位时发生一次，不再把多层局部改写串在一起。
 
-同理，时间、记忆检索结果、MCP 连接状态这些**每轮都变**的内容被注入到最后一条 user 消息尾部，system prompt 只保留静态部分。
+同理，时间、本轮目标、活动任务、记忆检索结果、MCP 连接状态这些**每轮都变**的内容被注入到最后一条 user 消息尾部，system prompt 只保留静态部分。
 
 ### 6.3 口径说明
 
@@ -301,7 +329,7 @@ Anthropic 要求 `tool_use` 与 `tool_result` 严格配对，缺一个就整个�
 |---|---|
 | 429 / RateLimit | 指数退避 + 随机抖动，最多 3 次 |
 | 529 / Overloaded | 重试；连续 2 次过载且有 `FALLBACK_MODEL_ID` 时切换模型 |
-| Prompt 过长 | 依次：结果预算 → 微压缩 → 反应式摘要 → 裁剪，并校验压缩后确实变小 |
+| Prompt 过长 | 与正常压缩同路径：一次检查点压缩；摘要失败开新窗口；压缩无效（未降到原来的 90% 以下）时按字节硬裁剪，并校验确实变小 |
 | 输出被截断（max_tokens） | 识别后把单次输出预算从 8000 提到 16000，本轮重试 |
 
 `DEFAULT_MAX_TOKENS` / `ESCALATED_MAX_TOKENS` 是代码常量（`agent/platform/config.py`），不是环境变量。
@@ -409,6 +437,7 @@ Anthropic 要求 `tool_use` 与 `tool_result` 严格配对，缺一个就整个�
 | type | 关键字段 | 含义 |
 |---|---|---|
 | `status` | `message`, `turn` | 阶段变化 |
+| `compaction` | `phase`, `window`, `before`, `after`, `status` | 上下文压缩开始 / 完成（仅过硬水位时出现） |
 | `thinking` | `turn` | 即将调用模型 |
 | `tool_use` | `tool`, `input`, `turn` | 准备执行工具 |
 | `tool_result` | `tool`, `output`, `turn`, `duration_ms` | 工具完成 |
@@ -592,11 +621,12 @@ Authorization: Bearer <token>
 
 | 常量 | 值 | 含义 |
 |---|---|---|
-| `CONTEXT_LIMIT` | 50000 | 触发压缩的估算大小 |
-| `CONTEXT_BYTES_BUDGET` | 120000 | 硬上限 |
+| `CONTEXT_SOFT_LIMIT` | 30000 | 软水位，只降级工具结果 |
+| `CONTEXT_LIMIT` | 50000 | 硬水位，触发检查点压缩 |
+| `COMPACT_USER_MESSAGE_BUDGET` | 12000 | 压缩时保留的最近用户原话预算 |
 | `PERSIST_THRESHOLD` | 8000 | 工具结果落盘阈值 |
 | `HISTORY_TOOL_LIMIT` | 6000 | 预览长度 |
-| `CONTEXT_SOFT_LIMIT` | 30000 | 软水位，只降级工具结果 |
+| `CONTEXT_BYTES_BUDGET` | 120000 | 已无代码引用，保留待清理 |
 | `REPEAT_GUARD_LIMIT` | 3 | 同一调用重复执行几次后拦截 |
 | `DEFAULT_MAX_TOKENS` | 8000 | 单次输出预算 |
 | `ESCALATED_MAX_TOKENS` | 16000 | 截断后扩容值 |
@@ -610,7 +640,7 @@ Authorization: Bearer <token>
 ## 14. 测试与评估
 
 ```bash
-pytest -q          # 206 passed, 11 skipped
+pytest -q          # 220 passed, 11 skipped
 ```
 
 11 个跳过项是需要真实 PostgreSQL 的集成测试，设置后自动启用：
