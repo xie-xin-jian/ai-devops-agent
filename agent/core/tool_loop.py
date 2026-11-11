@@ -1,5 +1,7 @@
 """Tool policy, approvals, and API calls for the Agent runtime."""
 
+import json
+
 from agent.core.error_recovery import with_retry
 from agent.orchestration.approval_coordinator import (
     ToolApprovalRequired,
@@ -13,6 +15,7 @@ from agent.observability.audit import (
 )
 from agent.tools.policy import evaluate_tool_policy
 from agent.tools.shell import suggest_tool_for_command
+from agent.platform.config import REPEAT_GUARD_EXEMPT, REPEAT_GUARD_LIMIT
 
 
 class ToolLoopMixin:
@@ -196,6 +199,53 @@ class ToolLoopMixin:
         )
         return record
 
+    def _tool_call_key(self, block) -> str:
+        payload = block.input if isinstance(block.input, dict) else {"input": str(block.input)}
+        return f"{block.name}|{json.dumps(payload, sort_keys=True, default=str)}"
+
+    def _call_counts(self) -> dict:
+        counts = getattr(self, "_tool_call_counts", None)
+        if counts is None:
+            counts = {}
+            self._tool_call_counts = counts
+        return counts
+
+    def _check_repeated_call(self, block) -> str:
+        """同一 run 内完全相同的调用执行到第 3 次就拦下，避免原地绕圈。
+
+        只统计真正执行过的调用：被策略拒绝、被重定向、等待审批未执行的
+        调用都不计数。轮询类工具（无副作用的观察接口）不参与判断。
+        """
+        if block.name in REPEAT_GUARD_EXEMPT:
+            return ""
+        count = self._call_counts().get(self._tool_call_key(block), 0)
+        if count < REPEAT_GUARD_LIMIT - 1:
+            return ""
+
+        self._audit(
+            "loop.blocked",
+            f"Repeated tool call blocked: {block.name}",
+            summary=f"identical call already executed {count} times in one run",
+            result=RESULT_BLOCKED,
+            severity=SEVERITY_HIGH,
+            tool_name=block.name,
+            correlation_id=getattr(self, "current_run_id", ""),
+            payload={"input": block.input, "count": count},
+        )
+        return (
+            f"Blocked: this exact `{block.name}` call already ran {count} time(s) "
+            "in this run with the same input. Do not repeat it. Change the "
+            "approach: use a different tool, different arguments, or report "
+            "what is still unknown and why."
+        )
+
+    def _note_executed_call(self, block) -> None:
+        if block.name in REPEAT_GUARD_EXEMPT:
+            return
+        counts = self._call_counts()
+        key = self._tool_call_key(block)
+        counts[key] = counts.get(key, 0) + 1
+
     def _handle_tool_call(self, block):
         decision = evaluate_tool_policy(
             block.name,
@@ -228,6 +278,10 @@ class ToolLoopMixin:
                     f"the command prefixed by `force:`."
                 )
 
+        repeated = self._check_repeated_call(block)
+        if repeated:
+            return repeated
+
         if decision.requires_approval:
             record = self._create_tool_approval(block, decision)
             raise ToolApprovalRequired(record)
@@ -257,6 +311,7 @@ class ToolLoopMixin:
             source="chat",
         )
         output = result.output
+        self._note_executed_call(block)
         return output
 
     def _await_tool_approval(self, record, cancel_event=None) -> str:
