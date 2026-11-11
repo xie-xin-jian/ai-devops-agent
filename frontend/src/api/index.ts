@@ -1,5 +1,5 @@
 import type { Message, Task, CronJob, CronLog, MCPServer, Tool, HealthStatus, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail, Target, TargetBrowserResult, PendingAction } from '../types'
-import type { EvalBatchSummary, EvalReport, EvalComparison } from '../types/eval'
+import type { EvalBatchSummary, EvalReport, EvalComparison, EvalRunStatus } from '../types/eval'
 
 const API_BASE = ''
 const API_TOKEN = import.meta.env.VITE_API_TOKEN || ''
@@ -187,6 +187,17 @@ export const auditApi = {
   },
 }
 
+export interface EvalRunPayload {
+  validate_only?: boolean
+  cases?: string[]
+  categories?: string[]
+  trials?: number
+  parallel?: number
+  judge?: boolean
+  stop_on_failure?: boolean
+  label?: string
+}
+
 export const evalApi = {
   batches: () =>
     request<{ batches: EvalBatchSummary[]; reports_dir: string }>(
@@ -199,6 +210,12 @@ export const evalApi = {
       `/api/eval/compare?baseline=${encodeURIComponent(baselineId)}` +
         `&current=${encodeURIComponent(currentId)}`
     ),
+  run: (payload: EvalRunPayload) =>
+    request<{ run_id: string; args: string[] }>('/api/eval/run', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  runs: () => request<{ runs: EvalRunStatus[] }>('/api/eval/runs'),
 }
 
 export const targetApi = {

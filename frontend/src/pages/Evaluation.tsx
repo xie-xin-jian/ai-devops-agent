@@ -1,19 +1,23 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronDown,
   ChevronRight,
   FlaskConical,
   GitCompare,
+  Play,
   RefreshCw,
 } from 'lucide-react'
-import { evalApi } from '../api'
+import { evalApi, type EvalRunPayload } from '../api'
 import Badge from '../components/Badge'
 import Button from '../components/Button'
+import Modal from '../components/Modal'
+import { Input } from '../components/Input'
 import type {
   CaseComparison,
   EvalBatchSummary,
   EvalComparison,
   EvalReport,
+  EvalRunStatus,
   EvalTrial,
 } from '../types/eval'
 
@@ -29,6 +33,11 @@ export default function Evaluation() {
   const [comparison, setComparison] = useState<EvalComparison | null>(null)
   const [comparing, setComparing] = useState(false)
 
+  const [showRunModal, setShowRunModal] = useState(false)
+  const [runs, setRuns] = useState<EvalRunStatus[]>([])
+  const [runError, setRunError] = useState('')
+  const prevRunningRef = useRef<Set<string>>(new Set())
+
   const loadBatches = async () => {
     setLoading(true)
     try {
@@ -42,9 +51,39 @@ export default function Evaluation() {
     }
   }
 
+  const pollRuns = useCallback(async () => {
+    try {
+      const res = await evalApi.runs()
+      setRuns(res.runs || [])
+    } catch {
+      /* 轮询失败静默，下次再试 */
+    }
+  }, [])
+
   useEffect(() => {
     loadBatches()
-  }, [])
+    pollRuns()
+  }, [pollRuns])
+
+  // 有运行中的任务时每 2.5s 轮询一次
+  useEffect(() => {
+    if (!runs.some((r) => r.status === 'running')) return
+    const timer = setInterval(pollRuns, 2500)
+    return () => clearInterval(timer)
+  }, [runs, pollRuns])
+
+  // 刚结束的运行 → 刷新报告列表
+  useEffect(() => {
+    const running = new Set(
+      runs.filter((r) => r.status === 'running').map((r) => r.run_id)
+    )
+    let finished = false
+    for (const id of prevRunningRef.current) {
+      if (!running.has(id)) finished = true
+    }
+    prevRunningRef.current = running
+    if (finished) loadBatches()
+  }, [runs])
 
   useEffect(() => {
     if (!selected) {
@@ -65,6 +104,22 @@ export default function Evaluation() {
       setComparison(await evalApi.compare(baselineId, currentId))
     } finally {
       setComparing(false)
+    }
+  }
+
+  const startRun = async (payload: EvalRunPayload) => {
+    setRunError('')
+    try {
+      await evalApi.run(payload)
+      setShowRunModal(false)
+      await pollRuns()
+    } catch (err: any) {
+      setRunError(
+        err?.response?.detail?.message ||
+          err?.detail?.message ||
+          err?.message ||
+          '启动失败'
+      )
     }
   }
 
@@ -97,6 +152,10 @@ export default function Evaluation() {
           <Button variant="ghost" onClick={loadBatches} disabled={loading}>
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
           </Button>
+          <Button variant="primary" onClick={() => setShowRunModal(true)}>
+            <Play size={14} />
+            运行评估
+          </Button>
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <CompareSelect
               value={baselineId}
@@ -122,6 +181,23 @@ export default function Evaluation() {
             </Button>
           </div>
         </div>
+
+        {runs.length > 0 && (
+          <RunPanel
+            runs={runs.slice(0, 3)}
+            onViewReport={(runId) => {
+              setSelected(runId)
+              setExpandedCase('')
+            }}
+          />
+        )}
+
+        <RunModal
+          open={showRunModal}
+          onClose={() => setShowRunModal(false)}
+          onSubmit={startRun}
+          error={runError}
+        />
 
         {batches.length === 0 ? (
           <EmptyState />
@@ -697,6 +773,254 @@ function ComparisonSection({
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+function RunModal({
+  open,
+  onClose,
+  onSubmit,
+  error,
+}: {
+  open: boolean
+  onClose: () => void
+  onSubmit: (payload: EvalRunPayload) => Promise<void>
+  error: string
+}) {
+  const [validateOnly, setValidateOnly] = useState(false)
+  const [casesText, setCasesText] = useState('')
+  const [categoriesText, setCategoriesText] = useState('')
+  const [trials, setTrials] = useState(3)
+  const [parallel, setParallel] = useState(1)
+  const [judge, setJudge] = useState(false)
+  const [stopOnFailure, setStopOnFailure] = useState(false)
+  const [label, setLabel] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const submit = async () => {
+    setSubmitting(true)
+    try {
+      await onSubmit({
+        validate_only: validateOnly,
+        cases: splitList(casesText),
+        categories: splitList(categoriesText),
+        trials,
+        parallel,
+        judge,
+        stop_on_failure: stopOnFailure,
+        label: label.trim(),
+      })
+      setCasesText('')
+      setCategoriesText('')
+      setLabel('')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="运行评估"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={submitting}>
+            取消
+          </Button>
+          <Button variant="primary" onClick={submit} disabled={submitting}>
+            {submitting ? '启动中…' : validateOnly ? '校验（免费）' : '启动（将调模型 API）'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <div>
+          <div className="mb-1.5 text-xs text-text-secondary">模式</div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setValidateOnly(false)}
+              className={`rounded-lg border px-3 py-1.5 text-xs ${
+                !validateOnly
+                  ? 'border-border-primary bg-accent-soft font-medium'
+                  : 'border-border-primary text-text-secondary'
+              }`}
+            >
+              正式评估
+            </button>
+            <button
+              onClick={() => setValidateOnly(true)}
+              className={`rounded-lg border px-3 py-1.5 text-xs ${
+                validateOnly
+                  ? 'border-border-primary bg-accent-soft font-medium'
+                  : 'border-border-primary text-text-secondary'
+              }`}
+            >
+              仅校验用例（不调模型）
+            </button>
+          </div>
+        </div>
+
+        <Input
+          label="用例（逗号分隔，留空 = 全部）"
+          placeholder="demo-inspect-service, check-config-syntax"
+          value={casesText}
+          onChange={(e) => setCasesText(e.target.value)}
+        />
+        <Input
+          label="类别（逗号分隔，留空 = 全部）"
+          placeholder="core, boundary, faq, abnormal"
+          value={categoriesText}
+          onChange={(e) => setCategoriesText(e.target.value)}
+        />
+
+        {!validateOnly && (
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="mb-1 block text-xs text-text-secondary">
+                每用例采样次数
+              </span>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={trials}
+                onChange={(e) => setTrials(Number(e.target.value) || 1)}
+                className="w-full rounded-lg border border-border-primary bg-bg-secondary px-3 py-1.5 text-sm"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs text-text-secondary">
+                并发数
+              </span>
+              <input
+                type="number"
+                min={1}
+                max={8}
+                value={parallel}
+                onChange={(e) => setParallel(Number(e.target.value) || 1)}
+                className="w-full rounded-lg border border-border-primary bg-bg-secondary px-3 py-1.5 text-sm"
+              />
+            </label>
+          </div>
+        )}
+
+        {!validateOnly && (
+          <div className="flex gap-5">
+            <label className="flex items-center gap-2 text-xs text-text-secondary">
+              <input
+                type="checkbox"
+                checked={judge}
+                onChange={(e) => setJudge(e.target.checked)}
+              />
+              启用 LLM Judge（开放问答用）
+            </label>
+            <label className="flex items-center gap-2 text-xs text-text-secondary">
+              <input
+                type="checkbox"
+                checked={stopOnFailure}
+                onChange={(e) => setStopOnFailure(e.target.checked)}
+              />
+              失败即停（强制串行）
+            </label>
+          </div>
+        )}
+
+        <Input
+          label="标签（可选）"
+          placeholder="例如 prompt-v2"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+        />
+
+        {error && (
+          <div className="rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-2 text-xs text-status-error">
+            {error}
+          </div>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+function splitList(text: string): string[] {
+  return text
+    .split(/[,，\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+function RunPanel({
+  runs,
+  onViewReport,
+}: {
+  runs: EvalRunStatus[]
+  onViewReport: (runId: string) => void
+}) {
+  const [openLog, setOpenLog] = useState('')
+  return (
+    <div className="mb-5 space-y-2">
+      {runs.map((run) => (
+        <div
+          key={run.run_id}
+          className="rounded-xl border border-border-primary bg-bg-secondary p-3"
+        >
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <Badge
+              variant={
+                run.status === 'running'
+                  ? 'info'
+                  : run.status === 'completed'
+                    ? 'success'
+                    : 'error'
+              }
+            >
+              {run.status === 'running'
+                ? `运行中 ${run.elapsed_s}s`
+                : run.status === 'completed'
+                  ? '已完成'
+                  : `失败（exit ${run.exit_code}）`}
+            </Badge>
+            <span className="font-mono text-text-tertiary">
+              {run.run_id}
+            </span>
+            {run.label && <span>{run.label}</span>}
+            {run.validate_only && <Badge variant="default">仅校验</Badge>}
+            {!run.validate_only && (
+              <span className="text-text-tertiary">
+                {run.cases.length ? `用例 ${run.cases.join('、')}` : '全部用例'}
+                {run.trials > 1 ? ` × ${run.trials}` : ''}
+                {run.parallel > 1 ? ` · 并发 ${run.parallel}` : ''}
+                {run.judge ? ' · Judge' : ''}
+              </span>
+            )}
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={() =>
+                  setOpenLog((prev) => (prev === run.run_id ? '' : run.run_id))
+                }
+                className="text-text-secondary hover:text-text-primary"
+              >
+                日志
+              </button>
+              {run.status === 'completed' && !run.validate_only && (
+                <Button
+                  variant="secondary"
+                  onClick={() => onViewReport(run.run_id)}
+                >
+                  查看报告
+                </Button>
+              )}
+            </div>
+          </div>
+          {openLog === run.run_id && (
+            <pre className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-lg bg-bg-tertiary p-2.5 font-mono text-[11px] text-text-secondary">
+              {run.log_tail || '（暂无输出）'}
+            </pre>
+          )}
+        </div>
+      ))}
     </div>
   )
 }

@@ -538,8 +538,12 @@ MCP 连接成功后动态追加 `mcp__{server}__{tool}`。
 | GET | `/api/eval/batches` | 报告列表（含 Wilson 95% 置信区间），按时间倒序 |
 | GET | `/api/eval/reports/{batch_id}` | 单个报告全文（含逐 trial 明细） |
 | GET | `/api/eval/compare` | 两 batch 显著性对比，参数 `baseline` / `current` / `tolerance` / `alpha` |
+| POST | `/api/eval/run` | 触发一次评估：子进程执行 `run_eval.py`，同一时刻只允许一个运行（409 拒绝并发） |
+| GET | `/api/eval/runs` | UI 触发的运行状态与日志尾部（进程内状态，重启即清） |
 
-数据源是 `eval/reports/*.json`（`run_eval.py` 的输出），只读，不依赖数据库。前端「评估」页面即消费这三个接口：batch 列表 → 汇总卡片 → 按用例下钻逐 trial 的评分与工具调用，顶部可发起基线对比。
+报告类接口的数据源是 `eval/reports/*.json`（`run_eval.py` 的输出），只读，不依赖数据库。`POST /run` 需要 `action.approve` 权限（正式模式会真实调用模型 API 产生费用；`validate_only` 模式零成本只校验用例）。
+
+前端「评估」页面消费这些接口：batch 列表 → 汇总卡片 → 按用例下钻逐 trial 的评分与工具调用；顶部可发起基线对比，也可直接在页面上触发评估（选用例/类别、采样次数、并发、Judge），运行进度实时轮询展示，完成后报告自动出现在列表里。
 
 ### 任务 / Cron
 

@@ -98,3 +98,20 @@ export interface EvalComparison {
   new_cases: string[]
   high_severity_regressions: CaseComparison[]
 }
+
+// UI 触发的评估运行状态（POST /api/eval/run 产生的子进程）
+export interface EvalRunStatus {
+  run_id: string
+  status: 'running' | 'completed' | 'failed'
+  exit_code: number | null
+  started_at: number
+  elapsed_s: number
+  validate_only: boolean
+  label: string
+  cases: string[]
+  categories: string[]
+  trials: number
+  parallel: number
+  judge: boolean
+  log_tail: string
+}
