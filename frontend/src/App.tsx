@@ -22,11 +22,11 @@ function App() {
 
   // 初始化主题
   useEffect(() => {
-    const migrated = localStorage.getItem('theme_version') === '2'
+    const migrated = localStorage.getItem('theme_version') === '4'
     const saved = migrated
       ? (localStorage.getItem('theme') || 'light')
       : 'light'
-    localStorage.setItem('theme_version', '2')
+    localStorage.setItem('theme_version', '4')
     localStorage.setItem('theme', saved)
     document.documentElement.classList.toggle('dark', saved === 'dark')
     document.documentElement.classList.toggle('light', saved !== 'dark')

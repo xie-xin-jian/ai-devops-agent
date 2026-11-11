@@ -23,7 +23,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     <div className="flex h-full w-full bg-bg-primary text-text-primary">
       <Sidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <TopBar title={titles[view] || ''} />
+        {view !== 'chat' && <TopBar title={titles[view] || ''} />}
         <main className="flex-1 overflow-hidden">{children}</main>
       </div>
       <Toast />
