@@ -29,6 +29,7 @@ export interface ChatSession {
   id: string
   title: string
   updatedAt: number
+  targetId?: string
 }
 
 function loadChatSessions(): ChatSession[] {
@@ -148,6 +149,7 @@ function upsertChatSession(
         ? existing.title
         : cleanTitle,
       updatedAt: Date.now(),
+      targetId: existing?.targetId || get().activeTargetId || '',
     },
     ...get().chatSessions.filter((item) => item.id !== sessionId),
   ].sort((a, b) => b.updatedAt - a.updatedAt)
@@ -193,6 +195,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           id: session.id,
           title: existing?.title || session.title || '新对话',
           updatedAt: session.updated_at * 1000,
+          targetId: session.target_id || existing?.targetId || '',
         }
       })
       const serverIds = new Set(merged.map((item) => item.id))
@@ -304,6 +307,14 @@ export const useAppStore = create<AppState>((set, get) => ({
                 ),
                 currentStatus: `${event.tool} 完成 (${event.duration_ms}ms)`,
               }))
+              break
+            case 'compaction':
+              set({
+                currentStatus:
+                  event.phase === 'started'
+                    ? `第 ${event.window ?? 1} 次压缩上下文（当前 ${event.before ?? 0} 字符）…`
+                    : `上下文已压缩：${event.before ?? 0} → ${event.after ?? 0} 字符`,
+              })
               break
             case 'text_delta':
               set((s) => ({ liveText: s.liveText + event.delta }))

@@ -33,7 +33,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 
 // 对话
 export interface StreamEvent {
-  type: 'status' | 'pending_action' | 'tool_use' | 'tool_result' | 'thinking' | 'text_delta' | 'done' | 'cancelled' | 'error'
+  type: 'status' | 'pending_action' | 'tool_use' | 'tool_result' | 'thinking' | 'text_delta' | 'compaction' | 'done' | 'cancelled' | 'error'
   message?: string
   turn?: number
   tool?: string
@@ -43,6 +43,13 @@ export interface StreamEvent {
   delta?: string
   text?: string
   total_turns?: number
+  // 上下文压缩事件：started 时只有 before，finished 时补充 after 与 status
+  phase?: 'started' | 'finished'
+  window?: number
+  before?: number
+  after?: number
+  reason?: string
+  compaction_status?: string
   pending_action?: {
     id: string
     session_id?: string
@@ -125,6 +132,7 @@ export const chatApi = {
         title: string
         updated_at: number
         message_count: number
+        target_id?: string
       }>
     }>('/api/chat/sessions'),
   renameSession: (sessionId: string, title: string) =>
