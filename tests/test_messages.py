@@ -28,8 +28,29 @@ def test_serialize_visible_messages_keeps_only_text_dialogue():
 
     assert serialize_visible_messages(messages) == [
         {"role": "user", "content": "check disk"},
-        {"role": "assistant", "content": "I will check it."},
         {"role": "assistant", "content": "Disk is healthy."},
+    ]
+
+
+def test_serialize_visible_messages_keeps_separate_final_answers():
+    messages = [
+        {"role": "user", "content": "question one"},
+        {"role": "assistant", "content": "answer one"},
+        {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "call_1",
+                "content": "internal",
+            }],
+        },
+        {"role": "assistant", "content": "answer two"},
+    ]
+
+    assert serialize_visible_messages(messages) == [
+        {"role": "user", "content": "question one"},
+        {"role": "assistant", "content": "answer one"},
+        {"role": "assistant", "content": "answer two"},
     ]
 
 
