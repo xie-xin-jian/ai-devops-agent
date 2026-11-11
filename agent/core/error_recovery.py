@@ -85,24 +85,39 @@ def recover_context_overflow(
     client,
     model,
     context_limit: int | None = None,
+    goal: str = "",
 ) -> tuple[list, dict]:
-    """Run bounded context recovery and report whether it was effective."""
+    """Run bounded context recovery and report whether it was effective.
+
+    与正常压缩走同一条路径：一次检查点压缩，失败或压不下去再按字节硬裁剪。
+    恢复过程不再叠加 snip / reactive 之类会产生占位符的中间层。
+    """
     limit = CONTEXT_LIMIT if context_limit is None else context_limit
     before = context_compact.estimate_size(messages)
 
-    recovered = context_compact.tool_result_budget(messages)
-    recovered = context_compact.micro_compact(recovered)
-    recovered = context_compact.reactive_compact(recovered, client, model)
+    recovered = messages
+    if client is not None:
+        try:
+            recovered = context_compact.checkpoint_compact(
+                messages, client, model, goal=goal
+            )
+        except Exception:
+            recovered = context_compact.fresh_window(messages, goal=goal)
+    else:
+        recovered = context_compact.fresh_window(messages, goal=goal)
 
-    after_reactive = context_compact.estimate_size(recovered)
-    if after_reactive >= before * 0.9:
-        recovered = context_compact.snip_compact(recovered)
+    after_checkpoint = context_compact.estimate_size(recovered)
+    if after_checkpoint >= before * 0.9:
+        recovered = context_compact.trim_by_size(
+            context_compact.tool_result_budget(messages, max_bytes=limit),
+            limit,
+        )
 
     after = context_compact.estimate_size(recovered)
     stats = {
         "before": before,
         "after": after,
-        "after_reactive": after_reactive,
+        "after_checkpoint": after_checkpoint,
         "limit": limit,
         "reduced": after < before * 0.9,
         "within_limit": after <= limit,

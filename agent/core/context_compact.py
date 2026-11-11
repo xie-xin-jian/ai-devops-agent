@@ -6,11 +6,21 @@ from pathlib import Path
 
 from agent.platform.config import (
     HISTORY_TOOL_LIMIT,
-    KEEP_RECENT_TOOL_RESULTS,
     PERSIST_THRESHOLD,
     TOOL_RESULTS_DIR,
     TRANSCRIPT_DIR,
 )
+
+# 压缩后重建历史用的固定标记。历史里只允许出现这一种"压缩消息"，
+# 不允许 [snipped ...] / [N earlier messages dropped ...] 之类的占位符，
+# 否则前端会把它们当成用户说的话渲染出来。
+SUMMARY_PREFIX = (
+    "以下内容是对此前对话的压缩摘要，不是用户原话。"
+    "若摘要与用户原话冲突，以用户原话和本轮目标为准。\n\n"
+)
+GOAL_SECTION = "## 本轮目标"
+COMPACT_USER_MESSAGE_BUDGET = 12000
+_DROPPED_RE = re.compile(r"^\[\d+ earlier messages dropped")
 
 
 def estimate_size(messages: list) -> int:
@@ -64,109 +74,6 @@ def collect_tool_results(messages: list) -> list[tuple]:
             if block_type(block) == "tool_result":
                 results.append((msg_idx, block_idx, block))
     return results
-
-
-def tool_use_index(messages: list) -> dict:
-    """tool_use_id -> tool_use block，压缩时用来还原"这一步做了什么"。"""
-    index = {}
-    for message in messages:
-        content = message.get("content", [])
-        if isinstance(content, str):
-            continue
-        for block in content:
-            if block_type(block) == "tool_use":
-                block_id = field(block, "id", "") or ""
-                if block_id:
-                    index[block_id] = block
-    return index
-
-
-def _block_text(block) -> str:
-    content = field(block, "content", "")
-    if isinstance(content, list):
-        return "".join(
-            field(c, "text", "") if block_type(c) == "text" else str(c)
-            for c in content
-        )
-    return str(content)
-
-
-_EXIT_RE = re.compile(r"exit(?:\s*code)?\s*[:=]\s*(-?\d+)", re.IGNORECASE)
-_EXIT_ONLY_RE = re.compile(r"^exit(?:\s*code)?\s*[:=]\s*-?\d+$", re.IGNORECASE)
-
-
-def summarize_tool_result(block, tool_use: dict | None, arg_limit: int = 120) -> str:
-    """把一条工具结果压成"工具 + 关键入参 + 退出码 + 末行"的一行摘要。
-
-    保留判断"这一步成没成、做过什么"所需的最小信息，体积通常只有原文的
-    几十分之一，但模型不会因为看不到历史而反复重试同一条命令。
-    """
-    output = _block_text(block)
-    tool_use = tool_use or {}
-    name = field(tool_use, "name", "tool")
-    args = field(tool_use, "input", {}) or {}
-    if not isinstance(args, dict):
-        args = {}
-    key_arg = ""
-    for key in ("command", "path", "file_path", "url", "query", "pattern", "name"):
-        if key in args:
-            key_arg = str(args[key])
-            break
-    if not key_arg and args:
-        key_arg = json.dumps(args, ensure_ascii=False, default=str)
-    key_arg = " ".join(key_arg.split())[:arg_limit]
-
-    detail = ""
-    match = _EXIT_RE.search(output)
-    if match:
-        detail = f"exit={match.group(1)}"
-    # 末行若只是退出码就跳过，取上一条有内容的行，避免摘要只剩"exit=0"
-    tail = next(
-        (
-            line.strip()[:160]
-            for line in reversed(output.splitlines())
-            if line.strip() and not _EXIT_ONLY_RE.match(line.strip())
-        ),
-        "",
-    )
-    if tail:
-        detail = f"{detail} | 尾: {tail}" if detail else f"尾: {tail}"
-    if output.startswith("[Large tool output persisted to"):
-        first = output.splitlines()[0]
-        detail = f"{detail} | {first}" if detail else first
-    if not detail:
-        detail = "空输出"
-
-    head = f"[{name}] {key_arg}".strip()
-    return f"{head} → {detail}"
-
-
-def segment_summary(messages: list, start: int, end: int, limit: int = 6) -> str:
-    """概括一段被丢弃的历史：调用了哪些工具、最后一步结果如何。"""
-    counts: dict[str, int] = {}
-    last_result = ""
-    tool_uses = tool_use_index(messages)
-    for message in messages[start:end]:
-        content = message.get("content", [])
-        if isinstance(content, str):
-            continue
-        for block in content:
-            kind = block_type(block)
-            if kind == "tool_use":
-                name = field(block, "name", "tool")
-                counts[name] = counts.get(name, 0) + 1
-            elif kind == "tool_result":
-                last_result = summarize_tool_result(
-                    block, tool_uses.get(field(block, "tool_use_id", ""))
-                )
-    if counts:
-        ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
-        summary = ", ".join(f"{name}×{count}" for name, count in ranked)
-    else:
-        summary = "无工具调用"
-    if last_result:
-        summary += f"；最后一步: {last_result}"
-    return summary
 
 
 def persist_large_output(tool_use_id: str, output: str) -> str:
@@ -273,115 +180,180 @@ def tool_result_budget(messages: list, max_bytes: int = 60000) -> list:
     return messages
 
 
-def snip_compact(messages: list, max_messages: int = 50) -> list:
-    if len(messages) <= max_messages:
-        return messages
-
-    head_count = 3
-    tail_count = max_messages - head_count - 1
-
-    if tail_count < 1:
-        tail_count = 1
-        head_count = max_messages - tail_count - 1
-
-    head = messages[:head_count]
-    tail = messages[-tail_count:]
-
-    snipped_start = head_count
-    snipped_end = len(messages) - tail_count
-
-    while snipped_start < len(messages) and message_has_tool_use(
-        messages[snipped_start - 1]
-    ):
-        head.append(messages[snipped_start])
-        snipped_start += 1
-        if len(head) + len(tail) >= max_messages:
-            break
-
-    while snipped_end > snipped_start and is_tool_result_message(messages[snipped_end]):
-        tail.insert(0, messages[snipped_end - 1])
-        snipped_end -= 1
-        if len(head) + len(tail) >= max_messages:
-            break
-
-    snipped_count = snipped_end - snipped_start
-
-    snip_message = {
-        "role": "user",
-        "content": (
-            f"[snipped {snipped_count} messages: "
-            f"{segment_summary(messages, snipped_start, snipped_end)}]"
-        ),
-    }
-
-    return head + [snip_message] + tail
-
-
 def _message_size(message) -> int:
     return len(json.dumps(message, default=str))
 
 
 def trim_by_size(messages: list, max_bytes: int, keep_head: int = 1) -> list:
-    """按字节预算裁剪历史：保留首条用户消息和最近的尾部。
+    """按字节预算硬裁剪：保留头部和最近的尾部，不插入任何占位符。
 
-    与只按消息条数裁剪的 snip_compact 不同，这里直接控制字节量，避免
-    "消息数没超但每条都很大" 导致每轮 API 调用都在重发几十万字节。
+    这是压缩失败或压不下去时的降级手段。裁剪点会避开 tool_use 与
+    tool_result 的配对边界，避免留下孤立的工具调用或工具结果。
     """
     sizes = [_message_size(message) for message in messages]
     total = sum(sizes)
     if total <= max_bytes or len(messages) <= keep_head + 1:
         return messages
 
-    head_size = sum(sizes[:keep_head])
-    start = keep_head
+    # 头部不能停在一条带 tool_use 的 assistant 消息上。
+    head = min(keep_head, len(messages) - 1)
+    while head < len(messages) and message_has_tool_use(messages[head - 1]):
+        head += 1
+        if head >= len(messages) - 1:
+            break
+
+    head_size = sum(sizes[:head])
+    start = head
     suffix_size = total - head_size
     while start < len(messages) - 1 and head_size + suffix_size > max_bytes:
         suffix_size -= sizes[start]
         start += 1
 
-    if start <= keep_head:
+    # 剩余的尾部不能以 tool_result 开头
+    while start < len(messages) - 1 and (
+        is_tool_result_message(messages[start])
+        or (start > 0 and message_has_tool_use(messages[start - 1]))
+    ):
+        start += 1
+
+    if start <= head:
         return messages
-
-    dropped = start - keep_head
-    marker = {
-        "role": "user",
-        "content": (
-            f"[{dropped} earlier messages dropped to bound context size: "
-            f"{segment_summary(messages, keep_head, start)}]"
-        ),
-    }
-    return messages[:keep_head] + [marker] + messages[start:]
+    if start >= len(messages):
+        return messages[:head]
+    return messages[:head] + messages[start:]
 
 
-def micro_compact(messages: list) -> list:
-    messages = [
-        json.loads(json.dumps(m, default=str)) if not isinstance(m, dict) else m
-        for m in messages
-    ]
+def message_text(message) -> str:
+    """提取一条消息里的纯文本，忽略 tool_use / tool_result 块。"""
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content:
+        if block_type(block) == "text":
+            parts.append(field(block, "text", "") or "")
+    return "\n".join(part for part in parts if part)
 
-    tool_results = collect_tool_results(messages)
 
-    if len(tool_results) <= KEEP_RECENT_TOOL_RESULTS:
-        return messages
+def is_internal_message(message) -> bool:
+    """判断是否是压缩/裁剪产生的内部消息，不参与"真实用户原话"收集。"""
+    text = message_text(message).strip()
+    if not text:
+        return True
+    return (
+        text.startswith("[snipped")
+        or text.startswith("[Compacted]")
+        or text.startswith(GOAL_SECTION)
+        or text.startswith(SUMMARY_PREFIX.strip())
+        or bool(_DROPPED_RE.match(text))
+    )
 
-    tool_uses = tool_use_index(messages)
-    to_compact = tool_results[:-KEEP_RECENT_TOOL_RESULTS]
 
-    for msg_idx, block_idx, block in to_compact:
-        summary = summarize_tool_result(
-            block,
-            tool_uses.get(block.get("tool_use_id", "")),
+def collect_real_user_messages(messages: list) -> list:
+    """收集真实用户消息：排除工具结果消息、旧摘要和压缩占位符。
+
+    旧摘要必须排除，否则多次压缩会出现"摘要套摘要"，越压越失真。
+    """
+    result = []
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        if is_tool_result_message(message) or is_internal_message(message):
+            continue
+        result.append(message)
+    return result
+
+
+def _select_user_messages(
+    messages: list,
+    budget: int = COMPACT_USER_MESSAGE_BUDGET,
+    goal: str = "",
+) -> list:
+    """按预算从新到旧挑选用户原话，装不下就截断该条后停止。
+
+    与按条数保留不同，这里保证"最近说了什么"一定在预算内，
+    不会出现保留了 3 条但其中一条把预算吃光的情况。
+    """
+    selected = []
+    remaining = budget
+    goal_text = goal.strip()
+    for message in reversed(collect_real_user_messages(messages)):
+        if remaining <= 0:
+            break
+        text = message_text(message).strip()
+        if not text:
+            continue
+        if goal_text and text == goal_text:
+            # 本轮目标会单独钉在历史开头，这里不重复占预算。
+            continue
+        size = _message_size(message)
+        if size <= remaining:
+            selected.append(text)
+            remaining -= size
+            continue
+        if remaining > 80:
+            selected.append(text[: remaining - 60] + "\n...(truncated)")
+        break
+    selected.reverse()
+    return selected
+
+
+def checkpoint_compact(
+    messages: list,
+    client,
+    model,
+    *,
+    goal: str = "",
+    budget: int = COMPACT_USER_MESSAGE_BUDGET,
+) -> list:
+    """用一份交接摘要整体替换历史。
+
+    重建顺序：本轮目标 → 最近用户原话（预算内）→ 摘要（末尾）。
+    只产出一条消息，历史里不留任何占位符；压缩前后体积只通过事件暴露。
+    """
+    write_transcript(messages)
+    summary = summarize_history(messages, client, model)
+    retained = _select_user_messages(messages, budget=budget, goal=goal)
+
+    sections = []
+    if goal.strip():
+        sections.append(f"{GOAL_SECTION}\n{goal.strip()}")
+    if retained:
+        sections.append(
+            "## 最近用户原话\n" + "\n".join(f"USER: {text}" for text in retained)
         )
-        if isinstance(messages[msg_idx]["content"][block_idx], dict):
-            messages[msg_idx]["content"][block_idx]["content"] = summary
-        else:
-            messages[msg_idx]["content"][block_idx] = {
-                "type": "tool_result",
-                "tool_use_id": block.get("tool_use_id", ""),
-                "content": summary,
-            }
+    body = "\n\n".join(sections)
+    if body:
+        body += "\n\n"
+    body += "## 交接摘要\n" + summary.strip()
+    return [{"role": "user", "content": SUMMARY_PREFIX + body}]
 
-    return messages
+
+def fresh_window(
+    messages: list,
+    *,
+    goal: str = "",
+    reason: str = "summary_unavailable",
+    budget: int = COMPACT_USER_MESSAGE_BUDGET,
+) -> list:
+    """摘要不可用时直接开启新窗口：只保留目标和最近用户原话。
+
+    这是 L4 降级路径：不调用模型，因此不会因为摘要请求失败而继续带着
+    超窗历史调用 API。
+    """
+    retained = _select_user_messages(messages, budget=budget, goal=goal)
+    sections = []
+    if goal.strip():
+        sections.append(f"{GOAL_SECTION}\n{goal.strip()}")
+    if retained:
+        sections.append(
+            "## 最近用户原话\n" + "\n".join(f"USER: {text}" for text in retained)
+        )
+    sections.append(
+        f"## 交接说明\n摘要生成失败（{reason}），已开启新的上下文窗口，"
+        "仅保留本轮目标与最近用户原话。"
+    )
+    return [{"role": "user", "content": SUMMARY_PREFIX + "\n\n".join(sections)}]
 
 
 def write_transcript(messages: list) -> Path:
@@ -440,17 +412,18 @@ def summarize_history(messages: list, client, model) -> str:
         total_chars += len(line)
 
     prompt = (
-        "Please summarize the following conversation history. Focus on:\n"
-        "1. The user's goals and objectives\n"
-        "2. Key findings and discoveries\n"
-        "3. Files that were modified or created\n"
-        "4. Remaining work or open issues\n\n"
-        "Be concise but thorough. This summary will be used to continue the conversation.\n\n"
+        "You are performing a CONTEXT CHECKPOINT COMPACTION. "
+        "Create a handoff summary for another LLM that will resume the task.\n"
+        "Output EXACTLY these sections:\n"
+        "Goal / Done / Decisions / Constraints / Files touched / "
+        "Failed attempts (commands or paths already tried and failed - do not retry) / "
+        "Remaining\n"
+        "Be concise. Do not invent facts. Do not include tool output verbatim.\n\n"
         "Conversation history:\n"
         "---\n"
         f"{conversation_text}\n"
         "---\n\n"
-        "Summary:"
+        "Handoff summary:"
     )
 
     response = client.messages.create(
@@ -468,37 +441,3 @@ def summarize_history(messages: list, client, model) -> str:
                 summary_parts.append(getattr(block, "text", ""))
 
     return "".join(summary_parts)
-
-
-def compact_history(messages: list, client, model) -> list:
-    write_transcript(messages)
-    summary = summarize_history(messages, client, model)
-    return [{"role": "user", "content": "[Compacted]\n\n" + summary}]
-
-
-def reactive_compact(messages: list, client, model) -> list:
-    if len(messages) <= 5:
-        return messages
-
-    keep_count = 5
-    while keep_count < len(messages) and message_has_tool_use(
-        messages[-keep_count - 1]
-    ):
-        keep_count += 1
-    while keep_count < len(messages) and is_tool_result_message(
-        messages[-keep_count - 1]
-    ):
-        keep_count += 1
-
-    if keep_count >= len(messages):
-        return messages
-
-    history_to_summarize = messages[:-keep_count]
-    tail = messages[-keep_count:]
-
-    write_transcript(messages)
-    summary = summarize_history(history_to_summarize, client, model)
-
-    compacted_message = {"role": "user", "content": "[Compacted]\n\n" + summary}
-
-    return [compacted_message] + tail

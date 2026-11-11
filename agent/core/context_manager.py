@@ -4,16 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from agent.platform.config import CONTEXT_BYTES_BUDGET, CONTEXT_LIMIT, WORKDIR
+from agent.platform.config import CONTEXT_LIMIT, CONTEXT_SOFT_LIMIT, WORKDIR
 from agent.core.context_compact import (
+    checkpoint_compact,
     estimate_size,
-    micro_compact,
-    snip_compact,
+    fresh_window,
     tool_result_budget,
     trim_by_size,
 )
 from agent.mcp.client import assemble_tool_pool, list_connected_mcp
 from agent.memory.policy import readable_scopes
+from agent.observability.logger import logger
 from agent.orchestration.tasks import list_tasks
 from agent.platform.identity import system_admin_principal
 from agent.platform.skill import list_skills
@@ -140,6 +141,11 @@ class ContextManagerMixin:
         检索出的记忆放进去会让每次调用的前缀都不同，缓存全部失效。
         """
         parts = [f"Current time: {datetime.now().isoformat(timespec='seconds')}"]
+        goal = (getattr(self, "run_goal", "") or "").strip()
+        if goal:
+            # 每轮重申本轮目标：压缩或长工具链之后模型容易跑偏，
+            # 这一行不写进历史，只追加到最后一条 user 消息末尾。
+            parts.append(f"Current run goal: {goal[:400]}")
         tasks_note = self._active_tasks_note()
         if tasks_note:
             parts.append(tasks_note)
@@ -189,13 +195,62 @@ class ContextManagerMixin:
         return injected
 
     def _compact_if_needed(self, messages: list) -> list:
-        messages = tool_result_budget(messages)
-        size = estimate_size(messages)
-        # 只有真的超过水位才做有损压缩：micro_compact 每轮改写中段历史
-        # 会让 prompt cache 前缀失效，因此不能无条件执行。
-        if size > CONTEXT_LIMIT:
-            messages = micro_compact(messages)
-            size = estimate_size(messages)
-        if size > CONTEXT_LIMIT:
-            messages = snip_compact(messages)
-        return trim_by_size(messages, CONTEXT_BYTES_BUDGET)
+        """轮边界压缩：平时只做预算检查，超水位才做一次"换本子"。
+
+        有损操作只有一次：用交接摘要整体替换历史（目标 + 最近用户原话 +
+        摘要），历史里不留任何占位符。摘要失败或压不下去时按字节硬裁剪降级，
+        不再把五层局部改写串在一起。
+        """
+        self._last_compaction = None
+        self._compaction_events = []
+        before = estimate_size(messages)
+        if before <= CONTEXT_SOFT_LIMIT:
+            return messages
+        if before <= CONTEXT_LIMIT:
+            # 软水位：只把体积过大的工具结果降级，不调模型、不改消息条数。
+            # 降级是幂等的，重复执行不会再改写历史，前缀保持稳定。
+            return tool_result_budget(messages, max_bytes=CONTEXT_SOFT_LIMIT)
+
+        goal = getattr(self, "run_goal", "") or ""
+        client = getattr(self, "client", None)
+        model = getattr(getattr(self, "recovery", None), "current_model", "")
+        status = "success"
+        compacted = None
+        window = getattr(self, "_compaction_window", 0) + 1
+        self._compaction_window = window
+        self._compaction_events.append({
+            "type": "compaction",
+            "phase": "started",
+            "window": window,
+            "reason": "hard_limit",
+            "before": before,
+        })
+
+        if client is not None:
+            try:
+                compacted = checkpoint_compact(messages, client, model, goal=goal)
+            except Exception as error:
+                logger.warning(f"[compact] 交接摘要失败，改为开新窗口: {error}")
+        if compacted is None:
+            # L4：摘要不可用时不继续带着超窗历史调 API，直接开新窗口。
+            compacted = fresh_window(messages, goal=goal)
+            status = "fresh_window"
+
+        after = estimate_size(compacted)
+        if after > CONTEXT_LIMIT:
+            compacted = trim_by_size(compacted, CONTEXT_SOFT_LIMIT)
+            after = estimate_size(compacted)
+            status = "trimmed"
+
+        self._last_compaction = {
+            "type": "compaction",
+            "phase": "finished",
+            "window": window,
+            "reason": "hard_limit",
+            "before": before,
+            "after": after,
+            "status": status,
+        }
+        self._compaction_events.append(dict(self._last_compaction))
+        logger.info(f"[compact {window}] {before} -> {after} ({status})")
+        return compacted

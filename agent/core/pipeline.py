@@ -4,9 +4,12 @@ import time
 import uuid
 
 from agent.core.context_compact import (
-    compact_history,
+    checkpoint_compact,
+    collect_real_user_messages,
     estimate_size,
+    fresh_window,
     history_tool_content,
+    message_text,
 )
 from agent.core.error_recovery import (
     escalate_tokens,
@@ -204,7 +207,11 @@ class AgentPipelineMixin:
             "cache_write": 0,
         }
         cost = self._estimate_usage_cost(totals)
-        return {**totals, "est_cost_cny": round(cost, 4)}
+        return {
+            **totals,
+            "est_cost_cny": round(cost, 4),
+            "compactions": int(getattr(self, "_compaction_window", 0) or 0),
+        }
 
     def _run_stream_impl(
         self,
@@ -233,6 +240,10 @@ class AgentPipelineMixin:
                 }
                 return
             self._persist_run_safe("model")
+            if not getattr(self, "run_goal", ""):
+                users = collect_real_user_messages(self.messages)
+                if users:
+                    self.run_goal = message_text(users[-1]).strip()
         else:
             self.current_run_id = f"run_{uuid.uuid4().hex}"
             self._audit(
@@ -246,6 +257,9 @@ class AgentPipelineMixin:
                 payload={"message": user_message},
             )
             self._last_user_query = user_message
+            self.run_goal = user_message.strip()
+            self._compaction_window = 0
+            self._tool_call_counts = {}
             self.messages.append({"role": "user", "content": user_message})
             self._persist_session_state()
             store = getattr(self, "state_store", None)
@@ -305,6 +319,26 @@ class AgentPipelineMixin:
                 "turn": turn + 1,
             }
             self.messages = self._compact_if_needed(self.messages)
+            for event in getattr(self, "_compaction_events", []):
+                if event.get("phase") == "finished":
+                    # 压缩记录落库（audit_events），可按 run_id + 事件类型统计次数。
+                    self._audit(
+                        "run.compaction",
+                        "Context compacted",
+                        summary=(
+                            f"window {event.get('window')}: "
+                            f"{event.get('before')} -> {event.get('after')} "
+                            f"({event.get('status')})"
+                        ),
+                        result=RESULT_SUCCESS,
+                        severity=SEVERITY_INFO,
+                        actor="agent",
+                        correlation_id=self.current_run_id,
+                        payload=dict(event),
+                    )
+                # 压缩结果只通过事件传给前端，不写进历史，避免出现占位符消息。
+                yield dict(event)
+            self._compaction_events = []
 
             yield {"type": "thinking", "turn": turn + 1}
             yield {
@@ -357,6 +391,7 @@ class AgentPipelineMixin:
                             self.messages,
                             self.client,
                             self.recovery.current_model,
+                            goal=getattr(self, "run_goal", "") or "",
                         )
                     except Exception as compact_error:
                         logger.error(f"[turn {turn+1}] 上下文压缩失败: {compact_error}")
@@ -590,11 +625,18 @@ class AgentPipelineMixin:
             self.messages.append({"role": "user", "content": results})
 
             if self._pending_compaction:
-                self.messages = compact_history(
-                    self.messages,
-                    self.client,
-                    self.recovery.current_model,
-                )
+                goal = getattr(self, "run_goal", "") or ""
+                try:
+                    self.messages = checkpoint_compact(
+                        self.messages,
+                        self.client,
+                        self.recovery.current_model,
+                        goal=goal,
+                    )
+                except Exception as error:
+                    # 与自动压缩保持一致：摘要失败不能把超窗历史继续送进下一轮。
+                    logger.warning(f"[compact] 显式压缩失败，改为开新窗口: {error}")
+                    self.messages = fresh_window(self.messages, goal=goal)
                 self._pending_compaction = False
 
             self._persist_run_safe("model")

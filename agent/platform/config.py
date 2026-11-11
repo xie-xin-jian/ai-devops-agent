@@ -116,10 +116,16 @@ MAX_RETRIES = 3
 MAX_CONSECUTIVE_529 = 2
 BASE_DELAY_MS = 500
 CONTEXT_LIMIT = 50000
+# 软水位：只降级体积过大的工具结果，不调用模型写摘要。
+CONTEXT_SOFT_LIMIT = 30000
 CONTEXT_BYTES_BUDGET = 120000
-KEEP_RECENT_TOOL_RESULTS = 6
 PERSIST_THRESHOLD = 8000
 HISTORY_TOOL_LIMIT = 6000
+
+# 同一 run 内同名同参数的调用执行到第 REPEAT_GUARD_LIMIT 次即拦截；
+# 轮询/观察类工具不参与，否则后台任务（list_background_tasks）会被误拦。
+REPEAT_GUARD_LIMIT = 3
+REPEAT_GUARD_EXEMPT = ("list_background_tasks", "list_tasks", "get_task")
 
 # 每百万 token 单价（人民币），用于估算每轮/每 run 的调用成本。
 # 按 deepseek-chat 公开价格设置；换模型时同步调整。
