@@ -164,28 +164,50 @@ class LLMJudge:
         observation: TrialObservation,
     ) -> JudgeVerdict:
         started = time.perf_counter()
+        request_kwargs = {
+            "model": self.model_id,
+            "max_tokens": 600,
+            "temperature": 0,
+            "system": (
+                "You are a strict, impartial evaluator for AI Agent "
+                "evaluation. Return valid JSON only."
+            ),
+            "messages": [{
+                "role": "user",
+                "content": build_judge_prompt(case, observation),
+            }],
+        }
         try:
-            response = self.client.messages.create(
-                model=self.model_id,
-                max_tokens=600,
-                temperature=0,
-                system=(
-                    "You are a strict, impartial evaluator for AI Agent "
-                    "evaluation. Return valid JSON only."
-                ),
-                messages=[{
-                    "role": "user",
-                    "content": build_judge_prompt(case, observation),
-                }],
-            )
+            response = self.client.messages.create(**request_kwargs)
         except Exception as exc:
-            return JudgeVerdict(
-                status="error",
-                score=0.0,
-                reason=f"judge request failed: {exc}",
-                evidence={"model": self.model_id},
-                duration_ms=int((time.perf_counter() - started) * 1000),
-            )
+            # Some Anthropic-compatible providers (for example DeepSeek)
+            # reject sampling parameters even though they accept the Messages
+            # API shape. Retry once without temperature instead of turning a
+            # usable judge result into an evaluation error.
+            if "temperature" not in str(exc):
+                return JudgeVerdict(
+                    status="error",
+                    score=0.0,
+                    reason=f"judge request failed: {exc}",
+                    evidence={"model": self.model_id},
+                    duration_ms=int(
+                        (time.perf_counter() - started) * 1000
+                    ),
+                )
+            request_kwargs.pop("temperature", None)
+            try:
+                response = self.client.messages.create(**request_kwargs)
+            except Exception as retry_exc:
+                exc = retry_exc
+                return JudgeVerdict(
+                    status="error",
+                    score=0.0,
+                    reason=f"judge request failed: {exc}",
+                    evidence={"model": self.model_id},
+                    duration_ms=int(
+                        (time.perf_counter() - started) * 1000
+                    ),
+                )
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         raw = _extract_text(getattr(response, "content", []))

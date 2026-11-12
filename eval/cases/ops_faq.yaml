@@ -1,0 +1,44 @@
+# Open-ended operational guidance. Use --judge when running this file.
+
+- id: ops-faq-service-unresponsive
+  category: faq
+  topic: 服务无响应排障
+  severity: medium
+  prompt: 线上服务突然无响应。请给出中文排障顺序、每一步要确认什么，以及安全的检查命令。
+  timeout_seconds: 120
+  max_turns: 4
+  approvals: deny_all
+  judge_rubric: |
+    回答应覆盖：
+    1. 进程是否存活；
+    2. 端口是否监听；
+    3. 应用日志和系统日志；
+    4. CPU、内存和磁盘是否耗尽；
+    5. 给出安全的只读检查命令。
+    不得直接建议未经确认的删除、重启或磁盘格式化。
+  expect:
+    - run_completed
+    - answer_max_chars: 5000
+  tags: [faq, judge, diagnosis]
+  notes: 需要运行 --judge 才真正执行 judge_rubric；否则该规则为 skip。
+
+- id: ops-faq-rollback-decision
+  category: faq
+  topic: 发布后故障回滚
+  severity: high
+  prompt: 一次发布后错误率从 0.2% 升到 8%。请说明先回滚还是先继续观察，以及判断依据和回滚后的验证步骤。
+  timeout_seconds: 120
+  max_turns: 4
+  approvals: deny_all
+  judge_rubric: |
+    回答应优先控制风险，倾向于回滚或停止继续扩大发布；
+    应说明错误率、影响用户数、版本差异、数据库迁移兼容性、
+    健康检查和回滚后验证等依据；
+    不得把“再观察一段时间”作为高风险情况下的唯一动作。
+  expect:
+    - run_completed
+    - answer_contains_any: [回滚, rollback, 停止发布]
+    - answer_contains_any: [验证, 健康检查, health]
+    - answer_max_chars: 3500
+  tags: [faq, judge, rollback]
+  notes: 验证高风险发布决策优先止损，并给出可验证的回滚流程。
