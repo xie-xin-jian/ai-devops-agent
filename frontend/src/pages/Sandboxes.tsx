@@ -1,8 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Box, RefreshCw, type LucideIcon } from 'lucide-react'
+import { Box, RefreshCw } from 'lucide-react'
 import { sandboxApi } from '../api'
 import Badge from '../components/Badge'
 import Button from '../components/Button'
+import {
+  SectionLabel,
+  WorkspaceEmpty,
+  WorkspacePage,
+  WorkspacePanel,
+} from '../components/Workspace'
 
 export default function Sandboxes() {
   const [data, setData] = useState<{ active: any[] }>({ active: [] })
@@ -19,108 +25,73 @@ export default function Sandboxes() {
 
   useEffect(() => {
     load()
-    const timer = setInterval(load, 10000)
+    const timer = setInterval(load, 10_000)
     return () => clearInterval(timer)
   }, [])
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto max-w-6xl">
-        <div className="mb-5 flex items-center justify-between">
-          <p className="text-sm text-text-secondary">
-            活动隔离工作区 {data.active.length}
-          </p>
-          <Button variant="secondary" onClick={load} disabled={loading}>
-            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-            刷新
-          </Button>
-        </div>
-
-        <Section
-          title="隔离工作区"
-          icon={Box}
-          empty="当前没有活动工作区"
-          items={data.active}
-          render={(item) => (
-            <SandboxRow
-              key={item.run_id}
-              item={item}
-            />
-          )}
+    <WorkspacePage
+      title="工作区"
+      description={`当前有 ${data.active.length} 个活动 Sandbox，Run 结束后会自动清理。`}
+      actions={
+        <Button variant="secondary" onClick={load} disabled={loading}>
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          刷新
+        </Button>
+      }
+      wide
+    >
+      {data.active.length === 0 ? (
+        <WorkspaceEmpty
+          icon={<Box size={17} />}
+          title="当前没有活动工作区"
+          description="Sandbox 只在 Run 执行期间存在，用于隔离文件类工具。"
         />
-      </div>
-    </div>
-  )
-}
-
-function Section({
-  title,
-  icon: Icon,
-  items,
-  empty,
-  render,
-}: {
-  title: string
-  icon: LucideIcon
-  items: any[]
-  empty: string
-  render: (item: any) => React.ReactNode
-}) {
-  return (
-    <section>
-      <div className="mb-3 flex items-center gap-2">
-        <Icon size={17} className="text-text-secondary" />
-        <h2 className="text-sm font-medium">{title}</h2>
-      </div>
-      {items.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border-primary py-12 text-center text-sm text-text-tertiary">
-          {empty}
-        </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-border-primary">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-border-primary bg-bg-tertiary/50">
-                <Th>Run</Th>
-                <Th>来源</Th>
-                <Th>工作区</Th>
-                <Th>状态</Th>
-                <Th>创建/更新时间</Th>
-              </tr>
-            </thead>
-            <tbody>{items.map(render)}</tbody>
-          </table>
-        </div>
+        <WorkspacePanel>
+          <div className="flex items-center justify-between border-b border-border-secondary px-4 py-3">
+            <SectionLabel>活动工作区</SectionLabel>
+            <Badge variant="info">{data.active.length} 个</Badge>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px]">
+              <thead>
+                <tr className="border-b border-border-primary bg-bg-secondary">
+                  <Th>Run</Th>
+                  <Th>来源</Th>
+                  <Th>工作区路径</Th>
+                  <Th>状态</Th>
+                  <Th>更新时间</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.active.map((item) => (
+                  <tr key={item.run_id} className="border-b border-border-secondary last:border-0">
+                    <td className="px-4 py-3 font-mono text-[10.5px]">{item.run_id}</td>
+                    <td className="px-4 py-3 text-[11px] text-text-secondary">{item.source || '-'}</td>
+                    <td className="px-4 py-3">
+                      <div className="max-w-md truncate font-mono text-[10.5px] text-text-secondary">
+                        {item.workspace_host_path || '-'}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3"><Badge variant="info">{item.status}</Badge></td>
+                    <td className="whitespace-nowrap px-4 py-3 text-[10.5px] text-text-tertiary">
+                      {formatTime(item.updated_at || item.created_at)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </WorkspacePanel>
       )}
-    </section>
-  )
-}
-
-function SandboxRow({ item }: { item: any }) {
-  return (
-    <tr className="border-b border-border-secondary last:border-0">
-      <td className="px-4 py-3 font-mono text-xs">{item.run_id}</td>
-      <td className="px-4 py-3 text-xs text-text-secondary">{item.source || '-'}</td>
-      <td className="px-4 py-3">
-        <div className="max-w-md truncate font-mono text-[11px] text-text-secondary">
-          {item.workspace_host_path || '-'}
-        </div>
-      </td>
-      <td className="px-4 py-3">
-        <Badge variant="info">
-          {item.status}
-        </Badge>
-      </td>
-      <td className="px-4 py-3 text-xs text-text-tertiary">
-        {formatTime(item.updated_at || item.created_at)}
-      </td>
-    </tr>
+    </WorkspacePage>
   )
 }
 
 function Th({ children }: { children: React.ReactNode }) {
   return (
-    <th className="px-4 py-3 text-left text-xs font-medium text-text-secondary">
+    <th className="px-4 py-2.5 text-left text-[10px] font-medium uppercase tracking-[0.1em] text-text-tertiary">
       {children}
     </th>
   )

@@ -199,13 +199,21 @@ export const useAppStore = create<AppState>((set, get) => ({
           targetId: session.target_id || existing?.targetId || '',
         }
       })
-      const serverIds = new Set(merged.map((item) => item.id))
-      const remainingLocal = local.filter((item) => !serverIds.has(item.id))
-      const next = [...merged, ...remainingLocal]
+      // 服务端列表是唯一事实来源：已不存在的会话不能靠本地缓存继续留在侧边栏，
+      // 否则点进去只会得到一屏空白。本地只保留"标题覆盖"与离线兜底。
+      const next = merged
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .slice(0, 50)
       set({ chatSessions: next })
       persistChatSessions(next)
+
+      // 当前选中的会话如果已经不存在（被删除或合并），回到空白新对话，
+      // 否则页面会一直停在"什么都没加载出来"的状态。
+      const current = get().sessionId
+      if (current && !next.some((item) => item.id === current)) {
+        localStorage.removeItem('session_id')
+        set({ sessionId: '', messages: [], toolHistory: [] })
+      }
     } catch {
       // Keep the local session index if server-side discovery is unavailable.
     }

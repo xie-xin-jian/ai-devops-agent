@@ -13,6 +13,9 @@ export interface Task {
   description: string
   status: 'pending' | 'in_progress' | 'completed' | 'blocked'
   priority: 'low' | 'medium' | 'high'
+  owner?: string | null
+  run_id?: string
+  source?: string
   blockedBy?: string[]
   details?: string
   result?: string

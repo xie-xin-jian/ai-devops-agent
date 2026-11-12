@@ -14,6 +14,13 @@ import {
 import { targetApi } from '../api'
 import Badge from '../components/Badge'
 import Button from '../components/Button'
+import {
+  SectionLabel,
+  SplitView,
+  WorkspaceEmpty,
+  WorkspacePage,
+  WorkspacePanel,
+} from '../components/Workspace'
 import { useAppStore } from '../store/useAppStore'
 import type { Target, TargetBrowserResult } from '../types'
 
@@ -55,6 +62,7 @@ export default function Targets() {
   const [busyId, setBusyId] = useState('')
   const [form, setForm] = useState<TargetForm | null>(null)
   const [browserOpen, setBrowserOpen] = useState(false)
+  const [selectedId, setSelectedId] = useState('')
 
   const load = async () => {
     setLoading(true)
@@ -118,100 +126,109 @@ export default function Targets() {
     }
   }
 
+  const selected = targets.find((target) => target.id === selectedId) || targets[0]
+
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto max-w-6xl">
-        <div className="mb-5 flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">运维目标</h2>
-            <p className="mt-1 text-sm text-text-secondary">
-              选择服务器上的项目目录，Agent 的工具将严格限制在该目录内。
-            </p>
-          </div>
-          <div className="flex gap-2">
+    <>
+      <WorkspacePage
+        title="运维项目"
+        description="选择服务器上的项目目录，Agent 的文件和操作工具会严格限制在该目录内。"
+        actions={
+          <>
             <Button variant="secondary" onClick={load} disabled={loading}>
-              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+              <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
               刷新
             </Button>
             <Button onClick={beginCreate}>
-              <Plus size={16} />
+              <Plus size={12} />
               添加项目
             </Button>
-          </div>
-        </div>
-
+          </>
+        }
+        wide
+      >
         {targets.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border-primary py-20 text-center">
-            <Server size={36} className="mx-auto mb-3 text-text-tertiary" />
-            <p className="text-sm text-text-secondary">还没有配置运维项目</p>
-            <Button className="mt-4" onClick={beginCreate}>
-              <Plus size={16} />
-              选择项目目录
-            </Button>
-          </div>
+          <WorkspaceEmpty
+            icon={<Server size={17} />}
+            title="还没有配置运维项目"
+            description="添加一个目录后，会话就可以把该项目作为操作边界。"
+          />
         ) : (
-          <div className="grid gap-3 lg:grid-cols-2">
-            {targets.map((target) => {
-              const active = target.id === activeTargetId
-              return (
-                <div
-                  key={target.id}
-                  className={`rounded-xl border bg-bg-secondary p-4 ${
-                    active ? 'border-accent-primary' : 'border-border-primary'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="mb-2 flex items-center gap-2">
-                        <FolderOpen size={17} className="text-accent-primary" />
-                        <h3 className="font-medium">{target.name}</h3>
-                        {active && <Badge variant="success">当前项目</Badge>}
+          <SplitView
+            asideWidth="420px"
+            aside={
+              <WorkspacePanel padded>
+                {!selected ? (
+                  <WorkspaceEmpty icon={<FolderOpen size={17} />} title="选择一个项目" />
+                ) : (
+                  <>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <SectionLabel>项目详情</SectionLabel>
+                        <h2 className="mt-2 truncate text-[16px] font-medium tracking-[-0.015em]">
+                          {selected.name}
+                        </h2>
                       </div>
-                      <div className="space-y-1 text-xs text-text-secondary">
-                        <div className="break-all font-mono">{target.root}</div>
-                        <div>
-                          Service: {target.service || '-'}
-                          {' · '}
-                          Health: {target.health_url || '-'}
-                        </div>
-                      </div>
+                      <Button size="sm" variant="ghost" onClick={() => beginEdit(selected)}>
+                        <Pencil size={12} />
+                        编辑
+                      </Button>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => beginEdit(target)}
-                      title="编辑项目配置"
-                    >
-                      <Pencil size={14} />
-                    </Button>
-                  </div>
-
-                  <div className="mt-4 flex gap-2">
-                    <Button
-                      size="sm"
-                      variant={active ? 'secondary' : 'primary'}
-                      disabled={active || busyId === target.id}
-                      onClick={() => activateTarget(target.id)}
-                    >
-                      <Check size={14} />
-                      {active ? '已选择' : '设为当前项目'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      disabled={busyId === target.id}
-                      onClick={() => remove(target)}
-                    >
-                      <Trash2 size={14} />
-                      删除
-                    </Button>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+                    <div className="mt-3">
+                      {selected.id === activeTargetId
+                        ? <Badge variant="success">当前项目</Badge>
+                        : <Button size="sm" variant="secondary" onClick={() => activateTarget(selected.id)}><Check size={12} />设为当前项目</Button>}
+                    </div>
+                    <div className="mt-5 space-y-4 text-[11px]">
+                      <Meta label="项目目录" value={selected.root} mono />
+                      <Meta label="服务名" value={selected.service || '-'} />
+                      <Meta label="健康检查" value={selected.health_url || '-'} />
+                      <Meta label="日志路径" value={selected.log_path || '-'} />
+                      <Meta label="部署命令" value={selected.deploy_command || '-'} mono />
+                      <Meta label="重启命令" value={selected.restart_command || '-'} mono />
+                      <Meta label="说明" value={selected.description || '-'} />
+                    </div>
+                    <div className="mt-5 border-t border-border-secondary pt-4">
+                      <Button size="sm" variant="danger" disabled={busyId === selected.id} onClick={() => remove(selected)}>
+                        <Trash2 size={12} />
+                        删除项目
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </WorkspacePanel>
+            }
+          >
+            <WorkspacePanel>
+              <div className="flex items-center justify-between border-b border-border-secondary px-4 py-3">
+                <SectionLabel>项目列表</SectionLabel>
+                <span className="text-[10px] text-text-tertiary">{targets.length}</span>
+              </div>
+              {targets.map((target) => {
+                const active = target.id === activeTargetId
+                return (
+                  <button
+                    key={target.id}
+                    onClick={() => setSelectedId(target.id)}
+                    className={`flex w-full items-center gap-3 border-b border-border-secondary px-4 py-3 text-left transition-colors last:border-0 ${
+                      selected?.id === target.id ? 'bg-bg-active' : 'hover:bg-bg-hover'
+                    }`}
+                  >
+                    <FolderOpen size={14} className="shrink-0 text-text-tertiary" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-[12.5px] font-medium">{target.name}</span>
+                        {active && <Badge variant="success">当前</Badge>}
+                      </div>
+                      <div className="mt-1 truncate font-mono text-[10px] text-text-tertiary">{target.root}</div>
+                    </div>
+                  </button>
+                )
+              })}
+            </WorkspacePanel>
+          </SplitView>
         )}
-      </div>
+      </WorkspacePage>
 
       {form && (
         <TargetFormPanel
@@ -238,6 +255,15 @@ export default function Targets() {
           }}
         />
       )}
+    </>
+  )
+}
+
+function Meta({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div>
+      <div className="text-text-tertiary">{label}</div>
+      <div className={`mt-1 break-all text-text-secondary ${mono ? 'font-mono text-[10px]' : ''}`}>{value}</div>
     </div>
   )
 }

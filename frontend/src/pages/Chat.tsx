@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import {
   ArrowUp,
-  ChevronDown,
+  ChevronRight,
   Folder,
+  Loader2,
   Plus,
   Plug,
   Square,
+  Terminal,
   Trash2,
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { ToolCallRecord } from '../store/useAppStore'
 import type { PendingAction } from '../types'
+import MarkdownText from '../components/MarkdownText'
 
 const PREVIEW_LINES = 5
 
@@ -29,16 +32,22 @@ export default function Chat() {
     <div className="flex h-full flex-col bg-bg-primary">
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
         {empty ? (
-          <div className="mx-auto flex h-full w-full max-w-[760px] flex-col justify-center px-6 pb-20">
-            <h1 className="mb-8 text-center text-[28px] font-normal tracking-[-0.01em] text-text-primary">
-              今天想处理什么？
+          <div className="mx-auto flex h-full w-full max-w-[780px] flex-col justify-center px-6 pb-24">
+            <div className="mb-2 text-center text-[11px] font-medium uppercase tracking-[0.18em] text-text-tertiary">
+              DevOps workspace
+            </div>
+            <h1 className="mb-9 text-center text-[30px] font-normal tracking-[-0.025em] text-text-primary">
+              有什么可以帮你？
             </h1>
             <Composer />
           </div>
         ) : (
-          <div className="mx-auto w-full max-w-[760px] px-6 py-8">
+          <div className="mx-auto w-full max-w-[780px] px-7 pb-10 pt-12">
             {messages.map((message, index) => {
               const isUser = message.role === 'user'
+              const previous = messages[index - 1]
+              const startsNewAssistantTurn =
+                !isUser && previous?.role === 'assistant'
               const withTools =
                 !isStreaming
                 && message.role === 'assistant'
@@ -46,10 +55,8 @@ export default function Chat() {
                 && toolHistory.length > 0
               return (
                 <div key={`${message.role}-${index}`}>
-                  {withTools
-                    && toolHistory.map((record, recordIndex) => (
-                      <ToolCard key={`${record.turn}-${recordIndex}`} record={record} />
-                    ))}
+                  {startsNewAssistantTurn && <AgentResponseDivider />}
+                  {withTools && <ToolActivity records={toolHistory} />}
                   {isUser ? (
                     <UserBubble text={message.content} />
                   ) : (
@@ -61,17 +68,17 @@ export default function Chat() {
 
             {isStreaming && (
               <div>
-                {toolHistory.map((record, recordIndex) => (
-                  <ToolCard key={`${record.turn}-${recordIndex}`} record={record} />
-                ))}
+                {toolHistory.length > 0 && (
+                  <ToolActivity records={toolHistory} streaming />
+                )}
                 {liveText ? (
                   <AssistantText text={liveText} streaming />
-                ) : (
+                ) : toolHistory.length === 0 ? (
                   <div className="mb-4 flex items-center gap-2 text-[13px] text-text-tertiary">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-text-tertiary" />
                     {currentStatus || 'thinking'}
                   </div>
-                )}
+                ) : null}
               </div>
             )}
           </div>
@@ -79,8 +86,8 @@ export default function Chat() {
       </div>
 
       {!empty && (
-        <div className="shrink-0 bg-bg-primary">
-          <div className="mx-auto w-full max-w-[760px] px-6 pb-4">
+        <div className="shrink-0 bg-gradient-to-t from-bg-primary via-bg-primary to-transparent pb-5 pt-7">
+          <div className="mx-auto w-full max-w-[780px] px-6">
             <Composer />
             {isStreaming && currentStatus && (
               <div className="mt-1.5 text-center text-[11px] text-text-tertiary">
@@ -135,7 +142,7 @@ function Composer() {
   }
 
   return (
-    <div>
+    <div className="relative">
       {pendingActions.length > 0 && (
         <ApprovalPanel
           actions={pendingActions}
@@ -145,7 +152,7 @@ function Composer() {
         />
       )}
 
-      <div className="rounded-[26px] border border-border-primary bg-bg-primary shadow-[0_2px_12px_rgba(0,0,0,0.06)] transition-colors focus-within:border-[#cfcfcf]">
+      <div className="codex-composer rounded-[28px] border border-border-primary bg-bg-primary transition-colors">
         <textarea
           ref={textareaRef}
           rows={1}
@@ -156,16 +163,43 @@ function Composer() {
           placeholder={isStreaming ? 'agent 正在执行…' : '给 agent 分配一个任务'}
           className="max-h-[200px] w-full resize-none bg-transparent px-5 pb-1 pt-4 text-[14px] leading-[1.6] text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-60"
         />
-        <div className="flex items-center justify-between px-2.5 pb-2.5 pt-1">
-          <button
-            onClick={() => setPickerOpen((value) => !value)}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            title="选择运维项目"
-          >
-            <Plus size={18} />
-          </button>
-          <div className="flex items-center gap-2">
-            <span className="hidden text-[12px] text-text-tertiary sm:inline">devops-agent</span>
+        <div className="flex items-end justify-between gap-2 px-2.5 pb-2.5 pt-1">
+          <div className="flex min-w-0 items-center gap-0.5">
+            <button
+              onClick={() => setPickerOpen((value) => !value)}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              title="选择运维项目"
+            >
+              <Plus size={17} />
+            </button>
+            <button
+              onClick={() => setPickerOpen((value) => !value)}
+              className="flex min-w-0 items-center gap-1.5 rounded-full px-2 py-1.5 text-[12px] text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+            >
+              <Folder size={13} />
+              <span className="max-w-[150px] truncate">
+                {activeTarget ? activeTarget.name : '选择项目'}
+              </span>
+            </button>
+            <button
+              onClick={() => setView('skills')}
+              className="hidden items-center gap-1.5 rounded-full px-2 py-1.5 text-[12px] text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary sm:flex"
+            >
+              <Plug size={13} />
+              Plugins
+            </button>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              onClick={resetMessages}
+              className="flex h-7 w-7 items-center justify-center rounded-full text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              title="清空对话"
+            >
+              <Trash2 size={13} />
+            </button>
+            <span className="hidden text-[11px] text-text-tertiary sm:inline">
+              devops-agent
+            </span>
             <button
               onClick={isStreaming ? stopStreaming : submit}
               disabled={!isStreaming && !input.trim()}
@@ -178,103 +212,152 @@ function Composer() {
         </div>
       </div>
 
-      <div className="relative mt-2">
-        <div className="flex items-center gap-1 rounded-xl border border-border-secondary bg-bg-primary px-1.5 py-1">
-          <button
-            onClick={() => setPickerOpen((value) => !value)}
-            className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-          >
-            <Folder size={13} />
-            <span className="max-w-[180px] truncate">
-              {activeTarget ? activeTarget.name : '选择项目'}
-            </span>
-          </button>
-          <button
-            onClick={() => setView('skills')}
-            className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-          >
-            <Plug size={13} />
-            Plugins
-          </button>
-          <button
-            onClick={resetMessages}
-            className="ml-auto flex h-7 w-7 items-center justify-center rounded-lg text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            title="清空对话"
-          >
-            <Trash2 size={13} />
-          </button>
-        </div>
-
-        {pickerOpen && (
-          <>
-            <div className="fixed inset-0 z-10" onClick={() => setPickerOpen(false)} />
-            <div className="absolute bottom-full left-0 z-20 mb-2 max-h-72 w-[320px] overflow-y-auto rounded-xl border border-border-primary bg-bg-primary py-1 shadow-[0_8px_30px_rgba(0,0,0,0.12)]">
-              {targets.length === 0 && (
-                <div className="px-3 py-2 text-[12px] text-text-tertiary">还没有运维项目</div>
-              )}
-              {targets.map((target) => {
-                const selected = target.id === activeTargetId
-                return (
-                  <button
-                    key={target.id}
-                    onClick={() => {
-                      activateTarget(target.id)
-                      setPickerOpen(false)
-                    }}
-                    className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg-tertiary ${
-                      selected ? 'text-text-primary' : 'text-text-secondary'
-                    }`}
-                  >
-                    <Folder size={14} className="shrink-0 text-text-tertiary" />
-                    <span className="min-w-0 flex-1 truncate text-[13px]">{target.name}</span>
-                    <span className="max-w-[110px] shrink-0 truncate text-[10px] text-text-tertiary">
-                      {target.root}
-                    </span>
-                  </button>
-                )
-              })}
-              <div className="mt-1 border-t border-border-secondary pt-1">
-                <button
-                  onClick={() => {
-                    setPickerOpen(false)
-                    setView('targets')
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                >
-                  <Plus size={12} />
-                  管理运维项目
-                </button>
-              </div>
+      {pickerOpen && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setPickerOpen(false)} />
+          <div className="absolute bottom-full left-0 z-20 mb-2 max-h-72 w-[340px] overflow-y-auto rounded-xl border border-border-primary bg-bg-primary py-1 shadow-[0_12px_40px_rgba(35,31,25,0.14)]">
+            <div className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-[0.12em] text-text-tertiary">
+              选择项目
             </div>
-          </>
-        )}
-      </div>
+            {targets.length === 0 && (
+              <div className="px-3 py-2 text-[12px] text-text-tertiary">还没有运维项目</div>
+            )}
+            {targets.map((target) => {
+              const selected = target.id === activeTargetId
+              return (
+                <button
+                  key={target.id}
+                  onClick={() => {
+                    activateTarget(target.id)
+                    setPickerOpen(false)
+                  }}
+                  className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg-tertiary ${
+                    selected ? 'text-text-primary' : 'text-text-secondary'
+                  }`}
+                >
+                  <Folder size={14} className="shrink-0 text-text-tertiary" />
+                  <span className="min-w-0 flex-1 truncate text-[13px]">{target.name}</span>
+                  <span className="max-w-[120px] shrink-0 truncate text-[10px] text-text-tertiary">
+                    {target.root}
+                  </span>
+                </button>
+              )
+            })}
+            <div className="mt-1 border-t border-border-secondary pt-1">
+              <button
+                onClick={() => {
+                  setPickerOpen(false)
+                  setView('targets')
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              >
+                <Plus size={12} />
+                管理运维项目
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }
 
 function AssistantText({ text, streaming }: { text: string; streaming?: boolean }) {
   return (
-    <div className="mb-5 whitespace-pre-wrap break-words text-[14px] leading-[1.7] text-text-primary">
-      {text}
+    <div className="markdown-body mb-7 break-words text-[14.5px] leading-[1.72] text-text-primary">
+      <MarkdownText text={text} />
       {streaming && (
-        <span className="ml-0.5 inline-block h-[14px] w-[7px] animate-pulse rounded-sm bg-text-primary align-[-2px]" />
+        <span className="ml-1 inline-block h-[14px] w-[7px] animate-pulse rounded-sm bg-text-primary align-[-2px]" />
       )}
+    </div>
+  )
+}
+
+function AgentResponseDivider() {
+  return (
+    <div className="my-7 flex items-center gap-3 text-[11px] text-text-tertiary">
+      <span className="h-px flex-1 bg-border-primary" />
+      <span>Agent 继续回复</span>
+      <span className="h-px flex-1 bg-border-primary" />
     </div>
   )
 }
 
 function UserBubble({ text }: { text: string }) {
   return (
-    <div className="mb-5 flex justify-end">
-      <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-bg-tertiary px-4 py-2.5 text-[14px] leading-[1.65] text-text-primary">
+    <div className="mb-7 flex justify-end">
+      <div className="max-w-[82%] whitespace-pre-wrap break-words rounded-[20px] bg-bg-tertiary px-4 py-2.5 text-[14px] leading-[1.65] text-text-primary">
         {text}
       </div>
     </div>
   )
 }
 
-function ToolCard({ record }: { record: ToolCallRecord }) {
+function ToolActivity({
+  records,
+  streaming = false,
+}: {
+  records: ToolCallRecord[]
+  streaming?: boolean
+}) {
+  const [expanded, setExpanded] = useState(false)
+  if (records.length === 0) return null
+
+  const active = [...records]
+    .reverse()
+    .find((record) => record.status === 'running' || record.status === 'pending')
+  const latest = records[records.length - 1]
+  const current = active || latest
+  const command = toolCommand(current.input)
+  const duration = records.reduce(
+    (total, record) => total + (record.duration_ms || 0),
+    0
+  )
+  const failed = records.some((record) => record.status === 'error')
+
+  return (
+    <div className="tool-activity mb-4">
+      <button
+        onClick={() => setExpanded((value) => !value)}
+        className="tool-activity-head"
+      >
+        {streaming && active ? (
+          <Loader2 size={12} className="shrink-0 animate-spin text-text-tertiary" />
+        ) : (
+          <Terminal size={12} className="shrink-0 text-text-tertiary" />
+        )}
+        <span className="shrink-0 text-[11.5px] font-medium text-text-secondary">
+          {active ? '正在执行' : failed ? '执行完成（有错误）' : '执行完成'}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-secondary">
+          {command}
+        </span>
+        <span className="hidden shrink-0 text-[10px] text-text-tertiary sm:inline">
+          {records.length > 1 ? `${records.length} 步` : ''}
+          {duration > 0 ? ` · ${formatDuration(duration)}` : ''}
+        </span>
+        <ChevronRight
+          size={11}
+          className={`shrink-0 text-text-tertiary transition-transform ${
+            expanded ? 'rotate-90' : ''
+          }`}
+        />
+      </button>
+      {expanded && (
+        <div className="tool-activity-body">
+          {records.map((record, index) => (
+            <ToolActivityRow
+              key={`${record.turn}-${index}-${record.tool}`}
+              record={record}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ToolActivityRow({ record }: { record: ToolCallRecord }) {
   const [expanded, setExpanded] = useState(false)
   const command = toolCommand(record.input)
   const all = (record.output || '').replace(/\s+$/, '').split('\n')
@@ -288,36 +371,35 @@ function ToolCard({ record }: { record: ToolCallRecord }) {
 
   const running = record.status === 'running' || record.status === 'pending'
   const failed = record.status === 'error'
-  const dotClass = running
-    ? 'animate-pulse bg-status-warning'
-    : failed
-      ? 'bg-status-error'
-      : 'bg-status-success'
-  const verb = running ? 'Running' : 'Ran'
+  const verb = running ? 'Running' : failed ? 'Failed' : 'Ran'
 
   return (
-    <div className="mb-3 overflow-hidden rounded-xl border border-border-secondary">
+    <div className="tool-activity-row">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg-secondary"
+        className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
       >
-        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
-        <span className="shrink-0 text-[12px] font-medium text-text-secondary">{verb}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-text-primary">
+        <ChevronRight
+          size={10}
+          className={`shrink-0 text-text-tertiary transition-transform ${
+            expanded ? 'rotate-90' : ''
+          }`}
+        />
+        <span className={`shrink-0 text-[10.5px] ${
+          failed ? 'text-status-error' : running ? 'text-status-warning' : 'text-text-tertiary'
+        }`}>{verb}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-secondary">
           {command}
         </span>
-        {hasOutput && (
-          <ChevronDown
-            size={12}
-            className={`shrink-0 text-text-tertiary transition-transform ${
-              expanded ? 'rotate-180' : ''
-            }`}
-          />
+        {record.duration_ms !== undefined && (
+          <span className="shrink-0 font-mono text-[9.5px] text-text-tertiary">
+            {formatDuration(record.duration_ms)}
+          </span>
         )}
       </button>
-      {hasOutput && (
+      {hasOutput && expanded && (
         <pre
-          className={`border-t border-border-secondary bg-bg-secondary px-3 py-2 font-mono text-[11.5px] leading-[1.65] text-text-secondary ${
+          className={`mx-2 mb-2 rounded-md border border-border-secondary bg-bg-primary px-2.5 py-2 font-mono text-[10.5px] leading-[1.6] text-text-secondary ${
             expanded ? 'max-h-80 overflow-auto' : ''
           }`}
         >
@@ -326,13 +408,18 @@ function ToolCard({ record }: { record: ToolCallRecord }) {
           {tailLines.length > 0 ? `\n${tailLines.join('\n')}` : ''}
         </pre>
       )}
-      {!hasOutput && !running && (
-        <div className="border-t border-border-secondary px-3 py-1.5 font-mono text-[11.5px] text-text-tertiary">
+      {!hasOutput && !running && expanded && (
+        <div className="px-6 pb-1.5 font-mono text-[10px] text-text-tertiary">
           (no output)
         </div>
       )}
     </div>
   )
+}
+
+function formatDuration(value: number) {
+  if (value < 1000) return `${value}ms`
+  return `${(value / 1000).toFixed(1)}s`
 }
 
 function ApprovalPanel({

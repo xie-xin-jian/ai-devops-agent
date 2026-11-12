@@ -1,137 +1,169 @@
-import { useEffect, useState } from 'react'
-import { Wrench, Terminal, ListTodo, Clock, Puzzle, RefreshCw, ChevronDown, ChevronUp, FolderOpen } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import {
+  Clock,
+  FolderOpen,
+  ListTodo,
+  Puzzle,
+  RefreshCw,
+  Search,
+  Terminal,
+  Wrench,
+} from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import Badge from '../components/Badge'
+import Button from '../components/Button'
+import {
+  SectionLabel,
+  WorkspaceEmpty,
+  WorkspacePage,
+  WorkspacePanel,
+  WorkspaceToolbar,
+} from '../components/Workspace'
 
-const categoryIcons: Record<string, any> = {
-  '基础工具': Terminal,
-  '任务管理': ListTodo,
-  '技能/子Agent': Puzzle,
-  'Cron 调度': Clock,
-  'MCP': Puzzle,
-  '上下文': RefreshCw,
-  '运维工具': Wrench,
-  '项目 Target': FolderOpen,
+const categoryIcons: Record<string, typeof Wrench> = {
+  基础工具: Terminal,
+  任务管理: ListTodo,
+  技能与子Agent: Puzzle,
+  Cron调度: Clock,
+  MCP: Puzzle,
+  上下文: RefreshCw,
+  运维工具: Wrench,
+  项目Target: FolderOpen,
 }
 
 function categorize(name: string): string {
-  const cats: Record<string, string[]> = {
-    '基础工具': ['bash'],
-    '任务管理': ['create_task', 'list_tasks', 'get_task', 'claim_task', 'complete_task'],
-    '技能/子Agent': ['list_skills', 'load_skill', 'spawn_subagent'],
-    'Cron 调度': ['schedule_cron', 'list_crons', 'cancel_cron'],
-    '上下文': ['compact'],
+  const categories: Record<string, string[]> = {
+    基础工具: ['bash'],
+    任务管理: ['create_task', 'list_tasks', 'get_task', 'claim_task', 'complete_task'],
+    技能与子Agent: ['list_skills', 'load_skill', 'spawn_subagent'],
+    Cron调度: ['schedule_cron', 'list_crons', 'cancel_cron', 'list_cron_logs'],
+    上下文: ['compact'],
   }
-  for (const [cat, tools] of Object.entries(cats)) {
-    if (tools.includes(name)) return cat
+  for (const [category, names] of Object.entries(categories)) {
+    if (names.includes(name)) return category
   }
   if (name.startsWith('mcp__')) return 'MCP'
-  if (name.startsWith('target_')) return '项目 Target'
-  if (['service_status', 'disk_usage'].includes(name)) return '运维工具'
-  return '其他'
+  if (name.startsWith('target_')) return '项目Target'
+  return '运维工具'
 }
 
 export default function Tools() {
   const { tools, fetchTools } = useAppStore()
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [query, setQuery] = useState('')
+  const [category, setCategory] = useState('全部')
 
   useEffect(() => {
     fetchTools()
   }, [fetchTools])
 
-  // 按类别分组
-  const groups: Record<string, typeof tools> = {}
-  for (const t of tools) {
-    const cat = categorize(t.name)
-    if (!groups[cat]) groups[cat] = []
-    groups[cat].push(t)
-  }
+  const groups = useMemo(() => {
+    const result: Record<string, typeof tools> = {}
+    for (const tool of tools) {
+      const group = categorize(tool.name)
+      result[group] = [...(result[group] || []), tool]
+    }
+    return result
+  }, [tools])
 
-  const toggle = (cat: string) => {
-    setExpanded((prev) => ({ ...prev, [cat]: !prev[cat] }))
-  }
+  const categories = ['全部', ...Object.keys(groups)]
+  const filtered = tools.filter((tool) => {
+    const matchesCategory = category === '全部' || categorize(tool.name) === category
+    const needle = query.trim().toLowerCase()
+    return (
+      matchesCategory &&
+      (!needle ||
+        tool.name.toLowerCase().includes(needle) ||
+        tool.description.toLowerCase().includes(needle))
+    )
+  })
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto max-w-5xl">
-        {/* 头部 */}
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <p className="text-sm text-text-secondary">
-              共 {tools.length} 个可用工具 · {Object.keys(groups).length} 个分类
-            </p>
-          </div>
-          <button
-            onClick={fetchTools}
-            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors"
-          >
-            <RefreshCw size={14} />
-            刷新
-          </button>
+    <WorkspacePage
+      title="工具库"
+      description={`${tools.length} 个可用工具，按运行时能力分组。`}
+      actions={
+        <Button variant="secondary" onClick={fetchTools}>
+          <RefreshCw size={12} />
+          刷新
+        </Button>
+      }
+      wide
+    >
+      <WorkspaceToolbar>
+        <div className="relative w-64">
+          <Search size={13} className="pointer-events-none absolute left-3 top-2.5 text-text-tertiary" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索工具名称或描述"
+            className="h-8 w-full rounded-lg border border-border-primary bg-bg-primary pl-8 pr-3 text-[12px] outline-none focus:border-text-tertiary"
+          />
         </div>
+        <span className="ml-auto text-[10.5px] text-text-tertiary">{filtered.length} 个结果</span>
+      </WorkspaceToolbar>
 
-        {/* 工具分类 */}
-        <div className="space-y-3">
-          {Object.entries(groups).map(([cat, toolList]) => {
-            const isOpen = expanded[cat] !== false
-            const Icon = categoryIcons[cat] || Wrench
-            return (
-              <div
-                key={cat}
-                className="overflow-hidden rounded-xl border border-border-primary bg-bg-secondary"
-              >
+      <div className="grid gap-4 md:grid-cols-[180px_minmax(0,1fr)]">
+        <WorkspacePanel padded>
+          <SectionLabel>分类</SectionLabel>
+          <div className="mt-2 space-y-0.5">
+            {categories.map((item) => {
+              const Icon = item === '全部' ? Wrench : categoryIcons[item] || Wrench
+              const count = item === '全部' ? tools.length : groups[item]?.length || 0
+              return (
                 <button
-                  onClick={() => toggle(cat)}
-                  className="flex w-full items-center justify-between px-4 py-3 hover:bg-bg-hover/50 transition-colors"
+                  key={item}
+                  onClick={() => setCategory(item)}
+                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[12px] transition-colors ${
+                    category === item
+                      ? 'bg-bg-active text-text-primary'
+                      : 'text-text-secondary hover:bg-bg-hover'
+                  }`}
                 >
-                  <div className="flex items-center gap-2.5">
-                    <Icon size={18} className="text-accent-primary" />
-                    <span className="font-medium text-sm">{cat}</span>
-                    <Badge variant="default">{toolList.length}</Badge>
-                  </div>
-                  {isOpen ? (
-                    <ChevronUp size={16} className="text-text-tertiary" />
-                  ) : (
-                    <ChevronDown size={16} className="text-text-tertiary" />
-                  )}
+                  <Icon size={13} className="text-text-tertiary" />
+                  <span className="min-w-0 flex-1 truncate">{item}</span>
+                  <span className="text-[10px] text-text-tertiary">{count}</span>
                 </button>
-                {isOpen && (
-                  <div className="border-t border-border-secondary p-3 grid gap-2 sm:grid-cols-2">
-                    {toolList.map((t) => (
-                      <div
-                        key={t.name}
-                        className="rounded-lg border border-border-primary bg-bg-primary p-3 hover:border-accent-primary/30 transition-colors"
+              )
+            })}
+          </div>
+        </WorkspacePanel>
+
+        <WorkspacePanel>
+          <div className="flex items-center justify-between border-b border-border-secondary px-4 py-3">
+            <SectionLabel>{category}</SectionLabel>
+          </div>
+          {filtered.length === 0 ? (
+            <WorkspaceEmpty icon={<Search size={17} />} title="没有匹配的工具" />
+          ) : (
+            filtered.map((tool) => (
+              <div
+                key={tool.name}
+                className="border-b border-border-secondary px-4 py-3.5 last:border-0"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <code className="font-mono text-[12px] font-medium text-text-primary">{tool.name}</code>
+                  <Badge>{categorize(tool.name)}</Badge>
+                </div>
+                <p className="mt-1.5 text-[11.5px] leading-5 text-text-secondary">
+                  {tool.description || '暂无工具说明。'}
+                </p>
+                {!!tool.input_schema?.required?.length && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {tool.input_schema.required.map((param: string) => (
+                      <span
+                        key={param}
+                        className="rounded border border-border-secondary bg-bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-text-tertiary"
                       >
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent-soft text-accent-primary">
-                            <Wrench size={14} />
-                          </div>
-                          <code className="text-sm font-mono font-medium">{t.name}</code>
-                        </div>
-                        <p className="text-xs text-text-secondary line-clamp-2 mb-2 pl-9">
-                          {t.description}
-                        </p>
-                        {t.input_schema?.required && t.input_schema.required.length > 0 && (
-                          <div className="flex flex-wrap gap-1 pl-9">
-                            {t.input_schema.required.map((p: string) => (
-                              <span
-                                key={p}
-                                className="rounded bg-bg-tertiary px-1.5 py-0.5 text-[10px] font-mono text-text-tertiary"
-                              >
-                                {p}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                        {param}
+                      </span>
                     ))}
                   </div>
                 )}
               </div>
-            )
-          })}
-        </div>
+            ))
+          )}
+        </WorkspacePanel>
       </div>
-    </div>
+    </WorkspacePage>
   )
 }

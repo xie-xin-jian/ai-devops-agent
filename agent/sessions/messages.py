@@ -34,6 +34,15 @@ def _extract_text(content) -> str:
     return "\n".join(parts).strip()
 
 
+def _has_tool_use(content) -> bool:
+    if not isinstance(content, list):
+        return False
+    return any(
+        _get_value(block, "type") == "tool_use"
+        for block in content
+    )
+
+
 def serialize_visible_messages(messages: list) -> list[dict]:
     """Return only user/assistant text messages that belong in the chat UI."""
     visible = []
@@ -48,6 +57,12 @@ def serialize_visible_messages(messages: list) -> list[dict]:
             or content.startswith(_INTERNAL_PREFIXES)
             or any(pattern.match(content) for pattern in _INTERNAL_PATTERNS)
         ):
+            continue
+        # A response with tool_use is an intermediate narration. The loop
+        # continues after the tool result and stores the user-facing answer in
+        # a later assistant message. Showing both makes one run look like
+        # several concatenated conversations during history replay.
+        if role == "assistant" and _has_tool_use(message.get("content")):
             continue
 
         visible.append({

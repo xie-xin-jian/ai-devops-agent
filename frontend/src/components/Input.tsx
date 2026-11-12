@@ -9,7 +9,7 @@ export function Input({ label, className = '', ...props }: InputProps) {
     <div className="flex flex-col gap-1.5">
       {label && <label className="text-xs font-medium text-text-secondary">{label}</label>}
       <input
-        className={`w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent-primary transition-colors ${className}`}
+        className={`h-9 w-full rounded-lg border border-border-primary bg-bg-secondary px-3 text-[13px] text-text-primary transition-colors placeholder:text-text-tertiary focus:border-text-tertiary focus:bg-bg-primary ${className}`}
         {...props}
       />
     </div>
@@ -25,7 +25,7 @@ export function Textarea({ label, className = '', ...props }: TextareaProps) {
     <div className="flex flex-col gap-1.5">
       {label && <label className="text-xs font-medium text-text-secondary">{label}</label>}
       <textarea
-        className={`w-full rounded-lg border border-border-primary bg-bg-primary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent-primary transition-colors resize-none ${className}`}
+        className={`w-full resize-none rounded-lg border border-border-primary bg-bg-secondary px-3 py-2.5 text-[13px] text-text-primary transition-colors placeholder:text-text-tertiary focus:border-text-tertiary focus:bg-bg-primary ${className}`}
         {...props}
       />
     </div>

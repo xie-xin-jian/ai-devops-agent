@@ -12,6 +12,7 @@ import Badge from '../components/Badge'
 import Button from '../components/Button'
 import Modal from '../components/Modal'
 import { Input } from '../components/Input'
+import { WorkspacePage } from '../components/Workspace'
 import type {
   CaseComparison,
   EvalBatchSummary,
@@ -145,10 +146,12 @@ export default function Evaluation() {
   }, [report])
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto max-w-6xl">
+    <WorkspacePage
+      title="评估"
+      description="查看批次指标、逐用例试跑轨迹，并用统计显著性判断回归。"
+      wide
+    >
         <div className="mb-5 flex flex-wrap items-center gap-3">
-          <h2 className="text-lg font-semibold">评估</h2>
           <Button variant="ghost" onClick={loadBatches} disabled={loading}>
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
           </Button>
@@ -232,8 +235,7 @@ export default function Evaluation() {
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </WorkspacePage>
   )
 }
 

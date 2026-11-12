@@ -12,6 +12,13 @@ import SessionSelect, {
   sessionTitle,
   useSessions,
 } from '../components/SessionSelect'
+import {
+  InlineNotice,
+  SplitView,
+  WorkspacePage,
+  WorkspacePanel,
+  WorkspaceToolbar,
+} from '../components/Workspace'
 
 export default function Recovery() {
   const sessions = useSessions()
@@ -90,15 +97,12 @@ export default function Recovery() {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto max-w-7xl">
-        <div className="mb-5 flex flex-wrap items-end gap-3">
-          <div>
-            <h1 className="text-base font-semibold">崩溃恢复中心</h1>
-            <p className="mt-1 text-sm text-text-secondary">
-              查看进程中断原因，只从没有工具在途的安全点继续。
-            </p>
-          </div>
+    <WorkspacePage
+      title="恢复"
+      description="查看进程中断原因，只从没有工具在途的安全点继续。"
+      wide
+    >
+        <WorkspaceToolbar>
           <SessionSelect
             value={sessionId}
             onChange={(value) => {
@@ -126,85 +130,16 @@ export default function Recovery() {
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             刷新
           </Button>
-        </div>
+        </WorkspaceToolbar>
 
         {error && (
-          <div className="mb-4 rounded-lg border border-status-error/30 bg-status-error/10 px-4 py-3 text-sm text-status-error">
-            {error}
-          </div>
+          <InlineNotice tone="error">{error}</InlineNotice>
         )}
 
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
-          <div className="overflow-hidden rounded-lg border border-border-primary">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[760px]">
-                <thead>
-                  <tr className="border-b border-border-primary bg-bg-tertiary/50">
-                    <Th>Run</Th>
-                    <Th>会话</Th>
-                    <Th>状态</Th>
-                    <Th>阶段</Th>
-                    <Th>安全点</Th>
-                    <Th>更新时间</Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {runs.map((run) => (
-                    <tr
-                      key={run.run_id}
-                      onClick={() => selectRun(run)}
-                      className={`cursor-pointer border-b border-border-secondary last:border-0 hover:bg-bg-hover/60 ${
-                        selected?.run_id === run.run_id ? 'bg-accent-soft' : ''
-                      }`}
-                    >
-                      <td className="px-4 py-3">
-                        <div className="font-mono text-xs">
-                          {shortId(run.run_id)}
-                        </div>
-                        <div className="mt-0.5 max-w-sm truncate text-[11px] text-text-tertiary">
-                          {run.user_message || '-'}
-                        </div>
-                      </td>
-                      <td className="max-w-40 px-4 py-3">
-                        <div
-                          className="truncate text-xs text-text-secondary"
-                          title={run.session_id || ''}
-                        >
-                          {sessionTitle(sessions, run.session_id)}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <StatusBadge status={run.status} />
-                      </td>
-                      <td className="px-4 py-3 text-xs text-text-secondary">
-                        {run.phase}
-                      </td>
-                      <td className="px-4 py-3 text-xs">
-                        {run.safe_to_resume ? (
-                          <span className="text-status-success">可继续</span>
-                        ) : (
-                          <span className="text-text-tertiary">不可用</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-text-tertiary">
-                        {formatTime(run.updated_at)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {!loading && runs.length === 0 && (
-              <div className="flex flex-col items-center py-20 text-center">
-                <CheckCircle2 size={34} className="mb-3 text-status-success" />
-                <p className="text-sm text-text-secondary">
-                  没有中断或失败的 Run
-                </p>
-              </div>
-            )}
-          </div>
-
-          <div className="min-h-[420px] rounded-lg border border-border-primary bg-bg-secondary p-4">
+        <SplitView
+          asideWidth="440px"
+          aside={
+          <WorkspacePanel padded className="min-h-[420px]">
             {!selected ? (
               <div className="flex h-full min-h-[380px] flex-col items-center justify-center text-center">
                 <RotateCcw size={34} className="mb-3 text-text-tertiary" />
@@ -240,6 +175,7 @@ export default function Recovery() {
                     value={sessionTitle(sessions, selected.session_id)}
                   />
                   <Meta label="初始请求" value={selected.user_message} />
+                  <Meta label="阶段" value={selected.phase || '-'} />
                   <Meta label="中断原因" value={selected.interruption_reason || '-'} />
                   <Meta label="在途工具" value={selected.active_tool || '-'} />
                   <Meta
@@ -264,10 +200,75 @@ export default function Recovery() {
                 )}
               </div>
             )}
-          </div>
-        </div>
-      </div>
-    </div>
+          </WorkspacePanel>
+          }
+        >
+          <WorkspacePanel>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[620px]">
+                <thead>
+                  <tr className="border-b border-border-primary bg-bg-tertiary/50">
+                    <Th>Run</Th>
+                    <Th>会话</Th>
+                    <Th>状态</Th>
+                    <Th>安全点</Th>
+                    <Th>更新时间</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {runs.map((run) => (
+                    <tr
+                      key={run.run_id}
+                      onClick={() => selectRun(run)}
+                      className={`cursor-pointer border-b border-border-secondary last:border-0 hover:bg-bg-hover/60 ${
+                        selected?.run_id === run.run_id ? 'bg-accent-soft' : ''
+                      }`}
+                    >
+                      <td className="px-4 py-3">
+                        <div className="font-mono text-xs">
+                          {shortId(run.run_id)}
+                        </div>
+                        <div className="mt-0.5 max-w-sm truncate text-[11px] text-text-tertiary">
+                          {run.user_message || '-'}
+                        </div>
+                      </td>
+                      <td className="max-w-40 px-4 py-3">
+                        <div
+                          className="truncate text-xs text-text-secondary"
+                          title={run.session_id || ''}
+                        >
+                          {sessionTitle(sessions, run.session_id)}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <StatusBadge status={run.status} />
+                      </td>
+                      <td className="px-4 py-3 text-xs">
+                        {run.safe_to_resume ? (
+                          <span className="text-status-success">可继续</span>
+                        ) : (
+                          <span className="text-text-tertiary">不可用</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-text-tertiary">
+                        {formatTime(run.updated_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {!loading && runs.length === 0 && (
+              <div className="flex flex-col items-center py-20 text-center">
+                <CheckCircle2 size={34} className="mb-3 text-status-success" />
+                <p className="text-sm text-text-secondary">
+                  没有中断或失败的 Run
+                </p>
+              </div>
+            )}
+          </WorkspacePanel>
+        </SplitView>
+    </WorkspacePage>
   )
 }
 

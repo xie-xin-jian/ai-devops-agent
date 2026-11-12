@@ -53,13 +53,30 @@ export default function Sidebar() {
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null)
 
   useEffect(() => {
-    fetchChatSessions()
+    let active = true
+    const refresh = () => {
+      if (!active || document.visibilityState !== 'visible') return
+      void fetchChatSessions()
+    }
+
+    refresh()
+    const timer = window.setInterval(refresh, 15_000)
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+    }
   }, [fetchChatSessions])
 
   const sessionsByTarget = new Map<string, ChatSession[]>()
   const unassigned: ChatSession[] = []
+  const targetIds = new Set(targets.map((target) => target.id))
   for (const session of chatSessions) {
-    if (session.targetId) {
+    // 已删除或暂时加载失败的 Target 不能把会话藏起来。
+    if (session.targetId && targetIds.has(session.targetId)) {
       const list = sessionsByTarget.get(session.targetId) || []
       list.push(session)
       sessionsByTarget.set(session.targetId, list)
