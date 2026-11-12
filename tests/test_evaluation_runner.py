@@ -235,6 +235,45 @@ def test_llm_judge_reports_malformed_output_as_error():
     assert "invalid judge response" in verdict.reason
 
 
+def test_llm_judge_retries_without_temperature_for_compatible_providers():
+    class Messages:
+        def __init__(self):
+            self.requests = []
+
+        def create(self, **kwargs):
+            self.requests.append(kwargs)
+            if "temperature" in kwargs:
+                raise TypeError(
+                    "create() got an unexpected keyword argument 'temperature'"
+                )
+            return SimpleNamespace(
+                content=[SimpleNamespace(
+                    type="text",
+                    text=(
+                        '{"verdict":"pass","score":0.9,'
+                        '"reason":"covered","missing":[]}'
+                    ),
+                )],
+                usage=None,
+            )
+
+    messages = Messages()
+    judge = LLMJudge(
+        model_id="compatible-model",
+        client=SimpleNamespace(messages=messages),
+    )
+
+    verdict = judge.evaluate(
+        _case(judge_rubric="anything"),
+        TrialObservation(status="completed", final_answer="answer"),
+    )
+
+    assert verdict.status == "pass"
+    assert len(messages.requests) == 2
+    assert "temperature" in messages.requests[0]
+    assert "temperature" not in messages.requests[1]
+
+
 @pytest.mark.parametrize(
     ("policy", "tool", "tool_input", "approved"),
     [

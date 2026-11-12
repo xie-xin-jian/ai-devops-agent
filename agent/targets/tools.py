@@ -463,8 +463,10 @@ TARGET_STATUS_SCHEMA = {
 TARGET_LOGS_SCHEMA = {
     "name": "target_logs",
     "description": (
-        "Read recent logs for the active target from its configured log file "
-        "or systemd service. Read-only."
+        "Read the newest N lines from the active target's configured log "
+        "file or systemd service. Use `path` for a non-default log and "
+        "`lines` for a tail-style read. Prefer this over bash cat/tail/wc. "
+        "Read-only."
     ),
     "input_schema": {
         "type": "object",

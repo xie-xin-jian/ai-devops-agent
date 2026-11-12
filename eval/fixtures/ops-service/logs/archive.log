@@ -1,0 +1,21 @@
+2026-11-11 22:00:01 INFO  ARCHIVE rotate started
+2026-11-11 22:00:02 INFO  ARCHIVE previous log copied
+2026-11-11 22:01:10 WARN  ARCHIVE queue depth=120
+2026-11-11 22:02:11 ERROR E-ARCHIVE-429 retry budget exhausted for batch 41
+2026-11-11 22:02:12 INFO  ARCHIVE retry scheduled
+2026-11-11 22:03:20 INFO  ARCHIVE queue depth=18
+2026-11-11 22:04:15 WARN  ARCHIVE temporary disk spike
+2026-11-11 22:05:01 INFO  ARCHIVE batch 41 completed
+2026-11-11 23:00:01 INFO  ARCHIVE rotate started
+2026-11-11 23:01:15 WARN  ARCHIVE queue depth=95
+2026-11-11 23:02:09 ERROR E-ARCHIVE-500 upstream archive store unavailable
+2026-11-11 23:02:10 INFO  ARCHIVE retry in 5 seconds
+2026-11-11 23:02:16 INFO  ARCHIVE retry succeeded
+2026-11-11 23:03:00 INFO  ARCHIVE queue depth=7
+2026-11-11 23:05:00 INFO  ARCHIVE batch 42 completed
+2026-11-12 00:00:01 INFO  ARCHIVE rotate started
+2026-11-12 00:01:15 WARN  ARCHIVE queue depth=64
+2026-11-12 00:02:09 ERROR E-ARCHIVE-500 upstream archive store unavailable
+2026-11-12 00:02:10 INFO  ARCHIVE retry in 5 seconds
+2026-11-12 00:02:16 INFO  ARCHIVE retry succeeded
+2026-11-12 00:03:00 INFO  ARCHIVE queue depth=4
