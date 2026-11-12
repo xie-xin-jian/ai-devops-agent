@@ -1,6 +1,8 @@
 """Project target configuration, browsing, and tool tests."""
 
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -152,7 +154,11 @@ def test_bash_executor_runs_on_host_in_target_root(tmp_path, monkeypatch):
 
     result = executor.execute(
         "bash",
-        {"command": "python -c \"from pathlib import Path; print(Path.cwd())\""},
+        {"command": subprocess.list2cmdline([
+            sys.executable,
+            "-c",
+            "from pathlib import Path; print(Path.cwd())",
+        ])},
         run_id="run-host-bash",
     )
 
