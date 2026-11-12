@@ -14,10 +14,21 @@ class RuntimePersistenceMixin:
         session_id = getattr(self, "session_id", "")
         if store is None or not session_id:
             return
+        history = (
+            self.get_messages()
+            if callable(getattr(self, "get_messages", None))
+            else getattr(self, "history_messages", getattr(self, "messages", []))
+        )
+        context = (
+            self.get_model_context()
+            if callable(getattr(self, "get_model_context", None))
+            else getattr(self, "messages", [])
+        )
         store.save_session(
             session_id,
             owner_id=self._owner_id(),
-            messages=getattr(self, "messages", []),
+            messages=history,
+            model_context=context,
             target_id=getattr(self, "target_id", ""),
         )
 

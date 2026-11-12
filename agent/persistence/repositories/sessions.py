@@ -15,7 +15,11 @@ from sqlalchemy import (
 )
 
 from agent.persistence.database import session_scope
-from agent.persistence.models import MessageRecord, SessionRecord
+from agent.persistence.models import (
+    MessageRecord,
+    SessionContextRecord,
+    SessionRecord,
+)
 from agent.persistence.repositories.common import (
     record_to_dict,
     upsert_row,
@@ -38,6 +42,12 @@ _UPDATE_COLUMNS = (
 _MESSAGE_UPDATE_COLUMNS = (
     "role",
     "content",
+    "content_hash",
+    "updated_at",
+)
+_CONTEXT_UPDATE_COLUMNS = (
+    "messages",
+    "message_count",
     "content_hash",
     "updated_at",
 )
@@ -72,6 +82,39 @@ def normalize_messages(messages) -> list[dict]:
         for message in (messages or [])
         if isinstance(message, dict)
     ]
+
+
+def messages_hash(messages: list[dict]) -> str:
+    return content_hash(normalize_messages(messages))
+
+
+def _upsert_session_context(
+    session,
+    session_id: str,
+    messages: list,
+    *,
+    created_at: float | None = None,
+) -> None:
+    normalized = normalize_messages(messages)
+    now = time.time()
+    existing = session.get(SessionContextRecord, session_id)
+    upsert_row(
+        session,
+        SessionContextRecord,
+        {
+            "session_id": session_id,
+            "messages": normalized,
+            "message_count": len(normalized),
+            "content_hash": messages_hash(normalized),
+            "created_at": float(
+                created_at
+                or (existing.created_at if existing is not None else now)
+            ),
+            "updated_at": now,
+        },
+        conflict_columns=["session_id"],
+        update_columns=_CONTEXT_UPDATE_COLUMNS,
+    )
 
 
 def _session_values(record: dict, *, ttl_seconds: float | None) -> dict:
@@ -170,8 +213,9 @@ def upsert_session(
     *,
     ttl_seconds: float | None = None,
     force: bool = False,
+    model_context: list | None = None,
 ) -> bool:
-    """Mirror a session record plus its message rows."""
+    """Mirror complete session history and optional model-only context."""
     data = record_to_dict(record)
     messages = normalize_messages(data.get("messages"))
     data = {**data, "message_count": len(messages)}
@@ -189,6 +233,13 @@ def upsert_session(
             force=force,
         )
         _sync_messages(session, values["session_id"], messages)
+        if model_context is not None:
+            _upsert_session_context(
+                session,
+                values["session_id"],
+                model_context,
+                created_at=values["created_at"],
+            )
     return True
 
 
@@ -219,6 +270,11 @@ def delete_session(session_id: str) -> bool:
         return False
     with session_scope() as session:
         session.execute(
+            sql_delete(SessionContextRecord).where(
+                SessionContextRecord.session_id == session_id
+            )
+        )
+        session.execute(
             sql_delete(MessageRecord).where(
                 MessageRecord.session_id == session_id
             )
@@ -242,6 +298,15 @@ def fetch_messages(session_id: str) -> list[dict]:
             {"role": row.role, "content": row.content}
             for row in rows
         ]
+
+
+def fetch_session_context(session_id: str) -> list[dict] | None:
+    session_id = str(session_id or "")
+    if not session_id:
+        return None
+    with session_scope() as session:
+        row = session.get(SessionContextRecord, session_id)
+        return list(row.messages or []) if row is not None else None
 
 
 def first_user_message(session_id: str):
@@ -274,8 +339,14 @@ def fetch_session(session_id: str, *, include_messages: bool = True) -> dict | N
         if row is None:
             return None
         record = _session_to_dict(row)
+        context_row = session.get(SessionContextRecord, session_id)
     if include_messages:
         record["messages"] = fetch_messages(session_id)
+    record["model_context"] = (
+        list(context_row.messages or [])
+        if context_row is not None
+        else None
+    )
     return record
 
 
@@ -346,6 +417,8 @@ __all__ = [
     "fetch_session",
     "fetch_sessions",
     "first_user_message",
+    "fetch_session_context",
+    "messages_hash",
     "normalize_messages",
     "rename_session",
     "upsert_session",

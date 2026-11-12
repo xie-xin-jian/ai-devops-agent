@@ -383,6 +383,32 @@ class MessageRecord(Base):
     )
 
 
+class SessionContextRecord(Base):
+    """Model-only conversation context for one session.
+
+    ``messages`` is the compacted prompt payload used for model calls. It is
+    intentionally separate from :class:`MessageRecord`, which is the complete
+    append-only conversation history shown to users.
+    """
+
+    __tablename__ = "session_contexts"
+
+    session_id: Mapped[str] = mapped_column(
+        String(120),
+        ForeignKey("sessions.session_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    messages: Mapped[list] = mapped_column(JSON_VALUE, default=list)
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    content_hash: Mapped[str] = mapped_column(
+        String(64),
+        default="",
+    )
+    created_at: Mapped[float] = mapped_column(Float)
+    updated_at: Mapped[float] = mapped_column(Float, index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
 class RunRecord(Base):
     """One Agent run with its resume metadata."""
 

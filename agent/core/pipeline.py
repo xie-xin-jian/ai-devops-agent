@@ -63,7 +63,7 @@ class AgentPipelineMixin:
             correlation_id=getattr(self, "current_run_id", ""),
             payload={},
         )
-        self.messages.append(
+        self.append_message(
             {
                 "role": "assistant",
                 "content": [{"type": "text", "text": text}],
@@ -260,7 +260,7 @@ class AgentPipelineMixin:
             self.run_goal = user_message.strip()
             self._compaction_window = 0
             self._tool_call_counts = {}
-            self.messages.append({"role": "user", "content": user_message})
+            self.append_message({"role": "user", "content": user_message})
             self._persist_session_state()
             store = getattr(self, "state_store", None)
             if store is not None:
@@ -289,7 +289,7 @@ class AgentPipelineMixin:
 
         bg_notifications = collect_background_results()
         if bg_notifications:
-            self.messages.append(
+            self.append_message(
                 {
                     "role": "user",
                     "content": "\n\n".join(bg_notifications),
@@ -483,7 +483,10 @@ class AgentPipelineMixin:
                 yield self._cancelled_event()
                 return
 
-            self.messages.append({"role": "assistant", "content": response.content})
+            self.append_message({
+                "role": "assistant",
+                "content": response.content,
+            })
 
             if not has_tool_use(response.content):
                 # LLM 认为不需要调工具了，输出最终文字
@@ -512,7 +515,10 @@ class AgentPipelineMixin:
                                 }
                             )
                     if results:
-                        self.messages.append({"role": "user", "content": results})
+                        self.append_message({
+                            "role": "user",
+                            "content": results,
+                        })
                     yield self._cancelled_event()
                     return
 
@@ -622,7 +628,7 @@ class AgentPipelineMixin:
                     }
                 )
 
-            self.messages.append({"role": "user", "content": results})
+            self.append_message({"role": "user", "content": results})
 
             if self._pending_compaction:
                 goal = getattr(self, "run_goal", "") or ""

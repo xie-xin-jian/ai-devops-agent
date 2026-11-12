@@ -43,6 +43,7 @@ from agent.tools.registry import ToolRegistry
 from agent.orchestration.pending_actions import PendingActionStore
 from agent.sessions.state_store import (
     RecoveryStore,
+    serialize_message,
 )
 from agent.observability.audit import (
     record_event,
@@ -112,6 +113,7 @@ class ComprehensiveAgent(
         self.sandbox_manager = SandboxManager()
         self._last_user_query = ""
         self.messages: list = []
+        self.history_messages: list = []
         self._pending_compaction = False
         self._register_default_tools()
         self.tool_executor = ToolExecutor(
@@ -147,10 +149,21 @@ class ComprehensiveAgent(
         return self.tool_registry.handlers()
 
     def get_messages(self) -> list:
+        return list(getattr(self, "history_messages", self.messages))
+
+    def get_model_context(self) -> list:
         return list(self.messages)
+
+    def append_message(self, message: dict) -> None:
+        """Append to model context and complete display history together."""
+        if not hasattr(self, "history_messages"):
+            self.history_messages = list(self.messages)
+        self.messages.append(message)
+        self.history_messages.append(serialize_message(message))
 
     def reset(self):
         self.messages = []
+        self.history_messages = []
         self._pending_compaction = False
         self.recovery = RecoveryState()
         self.current_run_id = ""

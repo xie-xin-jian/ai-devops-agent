@@ -1,8 +1,9 @@
 """Lightweight durable state for chat sessions and recoverable runs.
 
-This store intentionally keeps only two records:
+This store keeps three records:
 
-- Session: owner, timestamps, and the raw Agent message history.
+- Session: owner, timestamps, and the complete visible message history.
+- Session context: the compacted message payload used only by the model.
 - Run: status, phase, a safe-point message snapshot, and interruption reason.
 
 It does not persist execution decisions, preflight metadata, or an event for
@@ -191,6 +192,7 @@ class RecoveryStore:
         *,
         owner_id: str,
         messages: list,
+        model_context: list | None = None,
         status: str = "active",
         target_id: str | None = None,
         title: str | None = None,
@@ -200,6 +202,14 @@ class RecoveryStore:
             raise ValueError("session_id is required")
         now = time.time()
         existing = session_repo.fetch_session(session_id) or {}
+        effective_context = (
+            model_context
+            if model_context is not None
+            else existing.get("model_context")
+        )
+        if effective_context is None:
+            effective_context = messages
+        serialized_context = serialize_messages(effective_context)
         record = _compose_session_record(
             existing,
             session_id=session_id,
@@ -213,11 +223,13 @@ class RecoveryStore:
         if not session_repo.upsert_session(
             record,
             ttl_seconds=ttl_seconds or DEFAULT_SESSION_TTL_SECONDS,
+            model_context=serialized_context,
         ):
             raise RuntimeError(f"Failed to save session {session_id}")
         return {
             **record,
             "messages": deserialize_messages(record["messages"]),
+            "model_context": deserialize_messages(serialized_context),
         }
 
     def rename_session(self, session_id: str, title: str) -> dict | None:

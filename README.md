@@ -195,7 +195,7 @@ conda create -y -p ./pglocal -c conda-forge --override-channels postgresql=16
 ### 一次对话的完整路径
 
 1. `POST /api/chat/stream` → Bearer 校验 → 取请求身份。
-2. `get_or_create_session(session_id)`：内存命中直接用；否则从 `sessions/messages` 还原历史并重建 Agent。
+2. `get_or_create_session(session_id)`：内存命中直接用；否则分别从 `sessions/messages` 还原完整可见历史、从 `session_contexts` 还原模型上下文，再重建 Agent。
 3. 取 `session["run_lock"]`，同一会话串行；`cancel_event.clear()`。
 4. `Pipeline` 分配 `run_id`，`create_run` 落库，追加 user 消息（同时增量同步到 `messages` 表）。
 5. 每轮：发 `status` → 估算大小并按需压缩（过硬水位时发 `compaction` 事件并写审计）→ `thinking` → 组装工具 schema 与 system prompt → 调模型。
@@ -281,7 +281,7 @@ confirmed  --进程重启-->  failed（带 interrupted 标记）
 |---|---|
 | ≤ `CONTEXT_SOFT_LIMIT = 30000` | 不做任何事 |
 | 30000 ~ `CONTEXT_LIMIT = 50000`（软水位） | `tool_result_budget` 把合计超标的工具结果落盘、替换为「路径 + 预览」。幂等操作，不改消息条数，前缀保持稳定 |
-| > 50000（硬水位） | **检查点压缩**：用一条交接消息整体替换历史 |
+| > 50000（硬水位） | **检查点压缩**：用一条交接消息替换模型上下文，完整可见历史保持不动 |
 
 检查点压缩（`checkpoint_compact`）只产出一条消息，按固定结构重建：
 
@@ -299,7 +299,7 @@ confirmed  --进程重启-->  failed（带 interrupted 标记）
 - **目标钉死**：`run_goal` 取自 run 的第一条用户消息，压缩后钉在历史开头，且每轮重申到最后一条 user 消息尾部，防止长工具链之后模型跑偏。
 - **不摘要套摘要**：收集用户原话时排除旧摘要和内部消息，多次压缩不会逐层失真。
 - 压缩前先把完整历史写入 transcript（`DATA_DIR/.transcripts/`），原文可找回。
-- 压缩只通过事件暴露，不写进历史；结果同时写一条 `run.compaction` 审计。
+- 压缩只修改 `session_contexts` 中的模型上下文；`messages` 表的完整会话历史不会被覆盖。压缩过程同时发送事件并写一条 `run.compaction` 审计。
 
 **降级路径**：摘要调用失败时不带着超窗历史继续调 API，直接 `fresh_window` 开新窗口——不调模型，只保留目标 + 最近用户原话。压缩后估算大小仍超过 50000，再 `trim_by_size` 按字节硬裁剪（裁剪点避开 tool_use / tool_result 配对边界）。
 
@@ -344,7 +344,7 @@ Anthropic 要求 `tool_use` 与 `tool_result` 严格配对，缺一个就整个�
 
 | 域 | 表 |
 |---|---|
-| 会话与运行 | `sessions`、`messages`、`runs`、`run_snapshots` |
+| 会话与运行 | `sessions`、`messages`、`session_contexts`、`runs`、`run_snapshots` |
 | 审批与审计 | `pending_actions`、`audit_events` |
 | 任务 | `tasks`、`task_dependencies` |
 | 自动化 | `cron_jobs`、`cron_logs`、`background_tasks` |
@@ -353,7 +353,7 @@ Anthropic 要求 `tool_use` 与 `tool_result` 严格配对，缺一个就整个�
 | 用量 | `run_usage` |
 | 评估 | `eval_batches`、`eval_trials`、`eval_tool_calls`、`eval_scores` |
 
-迁移顺序：`0001` 基础 → `0002` 领域表 → `0003` 自动化 → `0004` 会话与消息 → `0005` 评估表。
+迁移顺序：`0001` 基础 → `0002` 领域表 → `0003` 自动化 → `0004` 会话与消息 → `0005` 评估表 → `0006` 模型上下文。
 
 ### 8.2 三处真正的并发控制
 

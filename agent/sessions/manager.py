@@ -127,8 +127,15 @@ class SessionManager:
         if executor is not None:
             executor.target_id = stored_target_id
         if stored_session:
-            agent.messages = stored_session.get("messages", [])
-            for message in reversed(agent.messages):
+            history = stored_session.get("messages", [])
+            model_context = stored_session.get("model_context")
+            agent.history_messages = history
+            agent.messages = (
+                model_context
+                if model_context is not None
+                else history
+            )
+            for message in reversed(history):
                 if (
                     message.get("role") == "user"
                     and isinstance(message.get("content"), str)
@@ -155,6 +162,7 @@ class SessionManager:
                 new_id,
                 owner_id=principal.id,
                 messages=[],
+                model_context=[],
                 target_id="",
                 ttl_seconds=self.ttl.total_seconds(),
             )
@@ -194,10 +202,16 @@ class SessionManager:
         executor = getattr(agent, "tool_executor", None)
         if executor is not None:
             executor.target_id = identifier
+        model_context = (
+            agent.get_model_context()
+            if callable(getattr(agent, "get_model_context", None))
+            else getattr(agent, "messages", [])
+        )
         self.state_store.save_session(
             session_id,
             owner_id=session.get("owner_id") or principal.id,
             messages=agent.get_messages(),
+            model_context=model_context,
             target_id=identifier,
             ttl_seconds=self.ttl.total_seconds(),
         )
