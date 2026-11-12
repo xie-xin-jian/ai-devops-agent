@@ -1,5 +1,6 @@
 ﻿import subprocess
 import re
+import shlex
 from pathlib import Path
 
 from agent.core.context_compact import head_tail_truncate
@@ -22,6 +23,55 @@ _CURL_GET = re.compile(r"\bcurl\b.*https?://", re.S)
 _CURL_WRITE = re.compile(
     r"(-d\b|--data\b|-X\s*(POST|PUT|DELETE|PATCH)|-T\b)"
 )
+_LOG_FILE = re.compile(r"\.(?:log|out|txt)\b", re.IGNORECASE)
+_LOG_PIPELINE_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
+_LOG_PIPELINE_COMMANDS = {
+    "cat",
+    "get-content",
+    "grep",
+    "head",
+    "sort",
+    "tail",
+    "type",
+    "uniq",
+    "wc",
+}
+
+
+def _is_readonly_log_tail(command: str) -> bool:
+    """Recognize tail-like inspection pipelines that target_logs can replace."""
+    if not _LOG_FILE.search(command):
+        return False
+    if ">" in command or "<" in command:
+        return False
+    if re.search(r"(?i)\btail\s+-f\b", command):
+        return False
+
+    segments = [
+        segment.strip()
+        for segment in _LOG_PIPELINE_SPLIT.split(command)
+        if segment.strip()
+    ]
+    if not segments:
+        return False
+
+    has_tail = False
+    for segment in segments:
+        try:
+            tokens = [
+                token.strip("\"'")
+                for token in shlex.split(segment, posix=False)
+                if token.strip("\"'")
+            ]
+        except ValueError:
+            return False
+        if tokens and tokens[0].lower() in {"sudo", "command"}:
+            tokens = tokens[1:]
+        if not tokens or tokens[0].lower() not in _LOG_PIPELINE_COMMANDS:
+            return False
+        if tokens[0].lower() == "tail":
+            has_tail = True
+    return has_tail
 
 
 def suggest_tool_for_command(command: str) -> tuple[str, str] | None:
@@ -32,6 +82,8 @@ def suggest_tool_for_command(command: str) -> tuple[str, str] | None:
     cmd = (command or "").strip()
     if not cmd or cmd.startswith("force:"):
         return None
+    if _is_readonly_log_tail(cmd):
+        return ("target_logs", "读取日志尾部")
     if "&&" in cmd or ";" in cmd:
         return None
     if _CURL_GET.search(cmd) and not _CURL_WRITE.search(cmd):

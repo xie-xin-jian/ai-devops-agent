@@ -73,7 +73,9 @@ class ContextManagerMixin:
             "- Prefer the dedicated inspection tools (cpu_usage, memory_usage, "
             "disk_io, process_top, ping_host) over raw bash when checking system "
             "health, so results stay structured. Use http_check for HTTP health "
-            "checks instead of curl. Simple inspection commands in bash "
+            "checks instead of curl. Use target_logs(path=..., lines=...) for "
+            "tail-style project log reads; do not use bash with cat/tail/wc "
+            "pipelines for target files. Simple inspection commands in bash "
             "(ss -tlnp, df -h, curl GET, pgrep) are auto-redirected to the "
             "dedicated tool; call the tool directly.",
         ]

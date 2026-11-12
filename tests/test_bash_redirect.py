@@ -61,6 +61,29 @@ class TestSuggestToolForCommand:
         assert suggest_tool_for_command("df -h; free -h; uptime") is None
         assert suggest_tool_for_command("cd /opt && df -h") is None
 
+    def test_readonly_log_tail_pipeline_redirects_to_target_logs(self):
+        assert (
+            suggest_tool_for_command(
+                "wc -l logs/archive.log && tail -n 20 logs/archive.log"
+            )[0]
+            == "target_logs"
+        )
+        assert (
+            suggest_tool_for_command("tail -n 50 logs/app.log")[0]
+            == "target_logs"
+        )
+
+    def test_mutating_or_following_log_command_is_not_redirected(self):
+        assert suggest_tool_for_command(
+            "tail -f logs/app.log"
+        ) is None
+        assert suggest_tool_for_command(
+            "tail -n 20 logs/app.log && rm -f logs/app.log"
+        ) is None
+        assert suggest_tool_for_command(
+            "tail -n 20 logs/app.log > /tmp/copy.log"
+        ) is None
+
     def test_force_prefix_bypasses(self):
         assert suggest_tool_for_command("force: df -h") is None
 
