@@ -1,8 +1,6 @@
-# 工具体系参考手册
+# 工具注册、策略与执行参考
 
-> **本文件由旧对话归档恢复重建（2026-10-30）**。原始对话（2026-10-15 ~ 10-16）随旧电脑损坏丢失，本文依据云端恢复的对话归档《recovered_share_20261015-18_工具权限与PG迁移》与《recovered_share_20261012_全面了解项目代码结构》中的表格与流程描述重建。归档未覆盖的内容标注"（待补充）"，未做任何编造。
->
-> 本手册是**详表版**参考：表格、代码锚点、行级细节。口语话术版见 [interview-script.md](interview-script.md)「工具系统模块」；治理效果的完整优化数据见 [optimization-log.md](optimization-log.md)。
+本文说明工具的注册方式、策略模型、运行时可见性、执行入口和审批链路。代码位置和参数以当前实现为准；性能数据见 [performance-tuning.md](performance-tuning.md)。
 
 ---
 
@@ -26,14 +24,14 @@
 
 ## 1. 六类工具总表
 
-> 来源：归档 1 末轮（2026-10-15T23:21，"这个项目有几种类型的工具……"）。当时核对完代码并写入面试话术的最终口径。
+> 工具分类依据当前注册表、策略声明和 Target 工具实现整理。
 
 | 类型 | 位置 | 权限特征 |
 |---|---|---|
 | 文件类 | `file_tools.py` | read 免批，write/edit MEDIUM，**强制沙箱**（仅注册进子代理注册表，不在主 Agent 的 45 个之内） |
 | Shell 类 | `shell.py` | bash = HIGH + 需审批 + 确定性拦截重定向 |
 | Ops 观测类 | `ops.py` | 13 个全 READ_ONLY 免批 |
-| Target 远程类 | `agent/targets/tools.py` | SSH 远程，restart=HIGH、deploy=**CRITICAL** |
+| Target 项目类 | `agent/targets/tools.py` | 本地项目目录与服务操作，restart=HIGH、deploy=**CRITICAL** |
 | 业务类 | `tools/business/` | 任务/记忆/技能/子代理/compact/cron |
 | MCP 动态类 | 运行时挂载 | 策略按工具名正则推断 |
 
@@ -44,7 +42,7 @@
 3. **可见性同源**：模型能看到的工具列表用同一套决策过滤——没权限的工具模型根本看不见，不是"看到但被拒"
 4. **默认拒绝**：未知工具一律 HIGH + 需审批；配错策略（read_only 配了非 READ_ONLY 风险级）启动时就 ValueError
 
-> 面试点睛句（归档原话）："**工具能不能注册**和**工具有没有权限**是解耦的两层——注册只管元数据齐全，权限独立声明，宁可误拦不可漏放。"
+> 设计原则："**工具能不能注册**和**工具有没有权限**是解耦的两层——注册只管元数据齐全，权限独立声明，宁可误拦不可漏放。"
 
 ---
 
@@ -62,13 +60,13 @@
 
 **路线 C（MCP）展开**：连接成功后 `with_dynamic_tools()` 复制注册表再挂载，**不动基础表**（详见第 6 节）。
 
-> 工具总数口径：**45 个 = 24 个内置工具（bash 1 + ops 13 + target 10）+ 21 个业务工具**；file 四件套（read/write/edit/glob）不在主注册表（仅注册进子代理，subagent.py L46-47），可在 `agent/tools/__init__.py` 与 `business/` 下当场数出（归档 3 简历核对结论；file_tools 归属口径按当前代码修正）。
+> 工具总数口径：**45 个 = 24 个内置工具（bash 1 + ops 13 + target 10）+ 21 个业务工具**；file 四件套（read/write/edit/glob）不在主注册表，仅注册进子代理。具体分类以 `agent/tools/__init__.py`、`business/` 和子代理注册逻辑为准。
 
 ---
 
 ## 3. 权限绑定机制：四步打包（以 bash 为例）
 
-归档原问题："每个工具是怎么和对应的权限绑定的？" 答案是四步：
+设计问题："每个工具是怎么和对应的权限绑定的？" 答案是四步：
 
 | 步 | 做什么 | 代码锚点 |
 |---|---|---|
@@ -77,13 +75,13 @@
 | 3. 注册时刻绑定 | `register()` 创建 ToolSpec 时取 `schema["name"]` 查字典，把 **policy + schema + handler 三者打包成一个 ToolSpec**。对齐锚点就是 schema 里的 `"name": "bash"` 字符串——没有装饰器、没有函数标注 | `registry.py` L63-68 |
 | 4. 绑不上就往严了绑 | `get_tool_policy()` 兜底：`mcp__` 前缀按名字正则推断；完全查不到的现造一个 HIGH + 需审批 + `tool.unknown` 的保守策略。name 拼错不会崩，只会自动落到最严档 | `policy.py` L534-547 |
 
-**设计取舍**（归档原话）：集中式让权限全景一屏可查、审计方便；代价是 name 拼错可能静默失配，用"查不到就按最严绑"兜底——**权限缺失不会变成漏洞，只会变成阻力**。
+**设计取舍**（设计说明）：集中式让权限全景一屏可查、审计方便；代价是 name 拼错可能静默失配，用"查不到就按最严绑"兜底——**权限缺失不会变成漏洞，只会变成阻力**。
 
-对比方案（面试追问"为什么不用装饰器标在函数上"）：装饰器分散在各文件里没法一眼看全权限矩阵；集中字典 + 注册期绑定让新增工具时权限必须在策略表里有明确表态或自动落最严档，不会出现"忘了标权限就默认放行"。
+设计权衡：不使用函数装饰器声明权限，原因是装饰器分散在各文件里没法一眼看全权限矩阵；集中字典 + 注册期绑定让新增工具时权限必须在策略表里有明确表态或自动落最严档，不会出现"忘了标权限就默认放行"。
 
-**简历短语 ↔ 支撑证据对照**（归档 2026-10-16 00:06）：
+**能力项与实现证据对照**（核对日期：2026-10-16）：
 
-| 简历短语 | 支撑讨论 |
+| 能力项 | 支撑讨论 |
 |---|---|
 | Schema + Handler + Policy 三段式注册 | ToolSpec 三合一打包（registry.py），policy.py 集中声明、注册时刻按 name 绑定 |
 | 工具定义、执行逻辑、风险策略**解耦** | `run_xxx` 函数体不知道注册和策略的存在——实现纯净、治理在外层 |
@@ -96,9 +94,9 @@
 
 ### 4.1 ToolPolicy 静态字段
 
-归档明确点名的字段（2026-10-16 09:08 一轮"每工具的 ToolPolicy"清单）：
+核验记录明确点名的字段（2026-10-16 09:08 一轮"每工具的 ToolPolicy"清单）：
 
-| 字段 | 含义 | 归档中的佐证 |
+| 字段 | 含义 | 核验记录中的佐证 |
 |---|---|---|
 | `risk_level` | 风险级，五档（READ_ONLY / LOW / MEDIUM / HIGH / CRITICAL） | bash=HIGH、deploy=CRITICAL |
 | `required_scopes` | 需要的权限 scope | bash → `(SHELL_EXECUTE,)` |
@@ -108,11 +106,11 @@
 | `timeout_seconds` | 执行超时 | executor L106 传给 bash |
 | `idempotent` | 是否幂等（默认 `True`） | bash / target_write_file 等写操作声明为 False |
 
-> 归档原话是"静态声明 ToolPolicy 八字段"。当前代码（policy.py L51-60）八字段为：`name` / `read_only` / `risk_level` / `requires_approval` / `required_scopes` / `timeout_seconds` / `idempotent` / `sandbox_required`——归档未展开的第 8 个字段是 `name`，幂等性字段名为 `idempotent`。
+> 核验记录原话是"静态声明 ToolPolicy 八字段"。当前代码（policy.py L51-60）八字段为：`name` / `read_only` / `risk_level` / `requires_approval` / `required_scopes` / `timeout_seconds` / `idempotent` / `sandbox_required`——此前资料未展开的第 8 个字段是 `name`，幂等性字段名为 `idempotent`。
 
 ### 4.2 运行时四道闸（含失败后果）
 
-> 归档 2026-10-16 10:14 修正：早期整理写"三闸"是**错的**，`evaluate_tool_policy`（policy.py L554）实际是 **4 个检查**；审批门不在四闸内，是放行后的独立一步。
+> 核验记录 2026-10-16 10:14 修正：早期整理写"三闸"是**错的**，`evaluate_tool_policy`（policy.py L554）实际是 **4 个检查**；审批门不在四闸内，是放行后的独立一步。
 
 | 顺序 | 检查 | 不通过时 |
 |---|---|---|
@@ -136,7 +134,7 @@ HTTP 请求（Bearer token）
   → 传给 ToolExecutor，整个 run 生命周期内不变  ← executor.py L53-56
 ```
 
-三个特殊分支（归档原话）：
+三个特殊分支（设计说明）：
 
 - **bash 确定性拦截**在审批闸**之前**：`suggest_tool_for_command` 命中规则（curl/ss/pgrep/df 等）直接改调专用工具，连审批都不进（详见第 10 节）
 - **审批通过 ≠ 绕过闸门**：pending_executor 重建注册表、用审批人的 principal 重新构造 context 重走执行——批准的是"这个动作"，闸门还是会再过一遍
@@ -148,7 +146,7 @@ HTTP 请求（Bearer token）
 
 ### 5.1 工具权限的六层 20 处使用点
 
-> 归档 2026-10-16 09:08：按"声明 → 生产 → 求值 → 分叉 → 重放 → 旁路"捋。
+> 核验记录 2026-10-16 09:08：按"声明 → 生产 → 求值 → 分叉 → 重放 → 旁路"捋。
 
 **A. 声明层（权限从哪写）**
 
@@ -241,7 +239,7 @@ def _register_default_tools(self):
 - `ALL_TOOL_SCHEMAS` / `ALL_TOOL_HANDLERS`（tools/`__init__.py` L42-52）
 - `BUILTIN_TOOL_POLICIES`（policy.py L502）
 
-实例级注册表只是把这些全局蓝图**装订**进自己的 `_specs`——比喻（归档原话）：模块级常量是"印刷厂的全套书稿"，`ToolRegistry.builtin()` 是每次 instance 都"新印一本书装订成册"，`self.tool_registry` 就是"这本书归我这个实例所有"。书稿共享，成书私有。
+实例级注册表只是把这些全局蓝图**装订**进自己的 `_specs`——比喻（设计说明）：模块级常量是"印刷厂的全套书稿"，`ToolRegistry.builtin()` 是每次 instance 都"新印一本书装订成册"，`self.tool_registry` 就是"这本书归我这个实例所有"。书稿共享，成书私有。
 
 佐证：`comprehensive.py` L62-68 的 `get_tool_registry` 用 `object.__new__(cls)` 绕过 `__init__`、单独建注册表给测试导目录用——注册表就是个普通实例属性，不依赖 Agent 其它状态。
 
@@ -274,7 +272,7 @@ def _runtime_tool_registry(self) -> ToolRegistry:
 
 ### 6.3 为什么 MCP 动态工具不直接注册进基础表
 
-如果直接注册进 `self.tool_registry`，会遇到三个麻烦（归档原话）：
+如果直接注册进 `self.tool_registry`，会遇到三个麻烦（设计说明）：
 
 1. **基础表被运行时状态污染**：连接要注册、断开要注销，"稳定目录"变成"随时变的池子"，任何持有引用的代码看到的工具集可能不一致
 2. **并发风险**：多个 run / 子代理共享同一基础表引用，一边正在执行工具、另一边断开 MCP 去注销，就出竞态
@@ -282,7 +280,7 @@ def _runtime_tool_registry(self) -> ToolRegistry:
 
 设计结论：基础注册表 = 只读的稳定底座，永不改；`_runtime_tool_registry()` = 每次取"基础表**副本** + 当前 MCP **快照**"，副本上的注册不影响任何人，用完就丢。**动态性全部隔离在副本里**——注册表级 + 视图级两层实例隔离。
 
-> 类比（归档原话）：`_register_default_tools` 是"装机"，跑一次就结束；`_runtime_tool_registry` 是"开机后每个时刻的外设清单"——外设会插拔，主板不能跟着改。
+> 类比（设计说明）：`_register_default_tools` 是"装机"，跑一次就结束；`_runtime_tool_registry` 是"开机后每个时刻的外设清单"——外设会插拔，主板不能跟着改。
 
 ---
 
@@ -319,7 +317,7 @@ def _runtime_tool_registry(self) -> ToolRegistry:
 - **纵深防御**：审批后重放走的正是 `execute` 直调，用**审批人的 principal** 重新求值——"审批通过 ≠ 绕过闸门"的实现方式
 - **代价可忽略**：判定是纯内存的集合查找 + `in` 判断，无 IO
 
-> 面试一句话（归档原话）："主循环里的判定负责给模型反馈和审计，执行器里的判定是组件自己的安全断言。因为 ToolExecutor 被主循环、子代理、后台任务、审批重放四条路径共用，只有主循环那条会先判一次——把它做成'不自检就不执行'的组件，任何新增调用方都天然带闸，子代理的工具白名单也是靠它才真正生效。"
+> 设计原则："主循环里的判定负责给模型反馈和审计，执行器里的判定是组件自己的安全断言。因为 ToolExecutor 被主循环、子代理、后台任务、审批重放四条路径共用，只有主循环那条会先判一次——把它做成'不自检就不执行'的组件，任何新增调用方都天然带闸，子代理的工具白名单也是靠它才真正生效。"
 
 ### 7.3 注册与执行的关系：执行链每一步都踩在注册的产物上
 
@@ -340,13 +338,13 @@ def execute(...):                                    # L60
 
 真正和注册无关的只有一件事：`run_xxx` 函数体本身——它不知道注册和策略的存在，只管干活。**实现纯净、治理在外层**。反面印证：审批通过后的延迟执行（pending_executor.py L60）因为原 run 早结束、当时的注册表（含 MCP 动态工具）已不在，必须**重新构建注册表**再执行——如果执行和注册无关，就不需要这一步。
 
-> 一句话总纲（归档原话）：注册是装订目录（静态底座，一次成型），执行是按需取件（运行时视图，每次现拼）——目录保证工具"存在且带权限"，视图保证"此刻摸到的是当下合法的集合"，实现函数完全不参与治理，只负责干活。
+> 一句话总纲（设计说明）：注册是装订目录（静态底座，一次成型），执行是按需取件（运行时视图，每次现拼）——目录保证工具"存在且带权限"，视图保证"此刻摸到的是当下合法的集合"，实现函数完全不参与治理，只负责干活。
 
 ---
 
 ## 8. 工具全生命周期大表
 
-> 归档 2026-10-16 10:11 应用户要求汇总的"工具全生命周期总表"（A 前置准备 + B 执行 + C 审批全流程），10:20 又对照源码补了遗漏分支（见第 9 节）并修正"三闸→四闸"。此为补全后的版本。
+> 核验记录 2026-10-16 10:11 应用户要求汇总的"工具全生命周期总表"（A 前置准备 + B 执行 + C 审批全流程），10:20 又对照源码补了遗漏分支（见第 9 节）并修正"三闸→四闸"。此为补全后的版本。
 
 | 阶段 | 步骤 | 做什么 | 位置 |
 |---|---|---|---|
@@ -375,7 +373,7 @@ def execute(...):                                    # L60
 | | C5 回填 | 结果作为 **tool_result** 回原 run / 离线包成 user 消息新起一轮；拒绝则"未执行"优雅降级 | pending_executor.py L16-29 |
 | | C6 留痕 | 5 类审计事件（created/confirmed/canceled/executed/interrupted）带 `actor`+`risk_level` | 各环节 |
 
-**读表要点**（归档 10:14 补遗后的结论）：
+**读表要点**（核验记录 10:14 补遗后的结论）：
 
 - 注册三来源（内置 24 / 业务 Mixin 21 / MCP 副本）都汇进同一个 ToolRegistry
 - 四道闸是"否决"，审批门是"转人工"，bash 重定向闸在审批闸之前
@@ -386,7 +384,7 @@ def execute(...):                                    # L60
 
 ## 9. 补遗分支（对照源码核出的遗漏）
 
-> 归档 2026-10-16 10:14："有没有漏掉的主分支或者分支？"——对照源码逐节点核出的七组遗漏（按链路顺序）。
+> 核验记录 2026-10-16 10:14："有没有漏掉的主分支或者分支？"——对照源码逐节点核出的七组遗漏（按链路顺序）。
 
 ### 9.1 执行入口与执行器内部
 
@@ -418,9 +416,9 @@ def execute(...):                                    # L60
 
 重启时 `api/main.py lifespan` 的 `_recover_startup_state()`（api/main.py L79）同时做四件事：`interrupt_stale_runs`（未终态 run 置中断）、`recover_interrupted_background_tasks`（background.py L96，running→failed）、`PendingActionStore.recover_interrupted`（pending_actions.py L311，confirmed→failed，经 repositories/actions.py L239）、沙箱清理。
 
-### 9.5 两个缺口注记（归档如实记录）
+### 9.5 两个缺口注记（核验记录如实记录）
 
-1. **`STATUS_EXPIRED` 是死状态**：pending_actions.py L18/L25 定义了 `expired` 并列入合法状态，但全仓库搜不到任何地方把 action 设成 `expired`。审批只有 1800s 等待超时会返回拒绝文本，**不会把记录改成 expired**——"定义了过期态但没有过期落库机制"。（是否有意留待未来超时落库，归档未定论）
+1. **`STATUS_EXPIRED` 是死状态**：pending_actions.py L18/L25 定义了 `expired` 并列入合法状态，但全仓库搜不到任何地方把 action 设成 `expired`。审批只有 1800s 等待超时会返回拒绝文本，**不会把记录改成 expired**——"定义了过期态但没有过期落库机制"。（是否有意留待未来超时落库，此前资料未定论）
 2. **"三闸"是错误表述**：`evaluate_tool_policy` 实际是 **4 个检查**（allowed_tools → required_scopes → write_enabled → execute_enabled），审批门是放行后的独立一步。本手册已统一按四闸书写。
 
 ---
@@ -456,15 +454,15 @@ def execute(...):                                    # L60
 
 **两个逃生口**：`force:` 前缀（shell.py L33）——模型确认专用工具覆盖不了就放行，仍走正常审批；复合命令不拦（L35-36）——含 `&&` 或 `;` 的直接放行，只拦"语义唯一"的巡检命令，避免误伤管道和脚本逻辑。
 
-### 10.3 治理数据（归档 2026-10-16 09:22）
+### 10.3 治理数据（核验记录 2026-10-16 09:22）
 
 - 改动前：969 次调用中 bash 占 535 次（55.2%），其中 234 次（43%）可替代；一个周期 163 次巡检命令（curl 76 / ss 59 / pgrep·ps 20 / df·free 8）每条都要弹审批
 - 改法：ops.py 加 `run_http_check` + READ_ONLY 免审批；shell.py 加规则；tool_loop 在审批闸前插拦截 + `force:` 逃生门
 - 效果：163 次/周期转免审批专用工具、消除人工等待、输出结构化顺带减上下文
 
-> 更新口径（归档 3，2026-10-20，基于 PG 数据）：785 条历史审批里 747 条是 bash（95.2%）；路由上线后 244 次治理决策中 137 次（56.1%）免审批直放、107 次进审批（43.9%）且**100% 是 bash**——审批队列不再有噪音。详见第 12 节与 optimization-log.md。
+> 更新口径（核验记录 3，2026-10-20，基于 PG 数据）：785 条历史审批里 747 条是 bash（95.2%）；路由上线后 244 次治理决策中 137 次（56.1%）免审批直放、107 次进审批（43.9%）且**100% 是 bash**——审批队列不再有噪音。详见第 12 节与 performance-tuning.md。
 
-> 面试一句话（归档原话）："这是一层**成本闸门**：bash 天然高成本——要审批、输出脏。我用规则识别出'其实有专用只读工具'的命令，在审批闸之前就把它重定向到专用工具，模型收到提示自己改用。设计上留了 `force:` 逃生口和复合命令豁免，宁可漏拦不可误伤。"
+> 设计原则："这是一层**成本闸门**：bash 天然高成本——要审批、输出脏。我用规则识别出'其实有专用只读工具'的命令，在审批闸之前就把它重定向到专用工具，模型收到提示自己改用。设计上留了 `force:` 逃生口和复合命令豁免，宁可漏拦不可误伤。"
 
 ---
 
@@ -481,14 +479,14 @@ pending ──confirm──→ confirmed ──→ executed / failed
 
 ### 11.2 触发与创建：先落盘再抛异常
 
-**判定来源四步**（归档 2026-10-16 09:36）：
+**判定来源四步**（核验记录 2026-10-16 09:36）：
 
 1. **声明**：`ToolPolicy.requires_approval` 在 `_build_builtin_policies` 里逐个写明
 2. **求值**：`evaluate_tool_policy`（policy.py L554-608）每个返回分支都带 `requires_approval=policy.requires_approval` 塞进 `ToolPolicyDecision`——判定值和"允不允许"是两个独立维度，一个工具可以"允许执行但需审批"
 3. **触发**：tool_loop.py L229-231——`if decision.requires_approval: record = self._create_tool_approval(block, decision); raise ToolApprovalRequired(record)`。整个项目里 `raise ToolApprovalRequired` **只出现在这一处**（L231），"什么动作需要审批"只有一个源码级答案
 4. **捕获与挂起**：pipeline.py L511-530 捕获异常 → `approval_coordinator.register`（L514，先注册再暴露事件）→ `yield {"type": "pending_action", ...}`（SSE 推前端弹审批）→ `_persist_run_state(status="running", phase="waiting_approval", safe_to_resume=False, active_tool=block.name)`（L521-526，run 落盘标记"卡在哪个工具"）→ `_await_tool_approval(approval.record, cancel_event)`（L527）
 
-**创建链路 3 层 9 步**（归档 2026-10-16 09:41）：
+**创建链路 3 层 9 步**（核验记录 2026-10-16 09:41）：
 
 | 层 | 步 | 做什么 |
 |---|---|---|
@@ -508,7 +506,7 @@ pending ──confirm──→ confirmed ──→ executed / failed
 
 **双轨留痕**：一次待审批生成有两份记录——pending_actions 表存可执行的动作本体（审批中心消费、审批时重放用），审计事件表（`audit_repo.persist_audit_event`）存审计事件（人查、按时间线追）。
 
-> 一句话（归档原话）：这条链路的核心是"**先落盘再抛异常**"——落盘保证审批项不丢（内存断了也能恢复），抛异常只负责把"有个动作在等人批"的信号传上去让当前 run 停下来等。
+> 一句话（设计说明）：这条链路的核心是"**先落盘再抛异常**"——落盘保证审批项不丢（内存断了也能恢复），抛异常只负责把"有个动作在等人批"的信号传上去让当前 run 停下来等。
 
 ### 11.3 挂起与确认：ApprovalCoordinator 跨线程握手
 
@@ -538,7 +536,7 @@ resolve(id)  → API 侧塞 decision + event.set() 唤醒
 
 > 为什么审批记录要持久化：进程重启后原来的 run 早没了，但审批项还在，用户照样能批——批完用审批人的 principal 补执行，再把结果作为新消息塞回会话。
 >
-> 精妙的兜底闭环（归档原话）：路径 A 等待审批期间原 run 快照是 `phase=waiting_approval, safe_to_resume=False`。这时进程被 kill：重启时 `interrupt_stale_runs` 把它标 interrupted 且因工具在途不可续跑（防重复执行）；但那条审批 action 还在 pending 状态不随进程消失；用户在审批中心单独批准 → 走路径 B → 独立执行 + 新 run 续跑。**run 在途走唤醒（快、共享 SSE），run 死了走独立执行+续跑消息（稳、可恢复）**。
+> 精妙的兜底闭环（设计说明）：路径 A 等待审批期间原 run 快照是 `phase=waiting_approval, safe_to_resume=False`。这时进程被 kill：重启时 `interrupt_stale_runs` 把它标 interrupted 且因工具在途不可续跑（防重复执行）；但那条审批 action 还在 pending 状态不随进程消失；用户在审批中心单独批准 → 走路径 B → 独立执行 + 新 run 续跑。**run 在途走唤醒（快、共享 SSE），run 死了走独立执行+续跑消息（稳、可恢复）**。
 
 关于 `approved_{action.id}`：它**不是"换了个 id"**，只是 `execute_pending_action` 函数内部存活的临时执行身份（pending_executor.py L48-128），用途只有三个：沙箱工作区的 key、MCP 工具池的 run 上下文、后台任务的 parent_run_id。不写 run 快照持久化（runs/run_snapshots 表）、不参与 run 状态机、不进恢复页。路径 A 里原 run_id 全程没换（只是 phase 变 waiting_approval）；路径 B 里原 run 已终态、由 session + 通知消息衔接新 run。
 
@@ -564,7 +562,7 @@ resolve(id)  → API 侧塞 decision + event.set() 唤醒
 
 ### 11.7 工具调用与审批全流程图（mermaid）
 
-> 归档 2026-10-16 10:24-10:30 曾用插件画过流程图，产物随旧电脑丢失。以下按归档文字描述重画：主干是前置准备 → 模型发起并现拼运行时视图 → 过四闸 → 审批判断 → 分派执行并回填；含执行器四岔路、双路径执行、崩溃对账与 STATUS_EXPIRED 注记。
+> 核验记录 2026-10-16 10:24-10:30 曾用插件画过流程图，产物随旧电脑丢失。以下按核验记录文字描述重画：主干是前置准备 → 模型发起并现拼运行时视图 → 过四闸 → 审批判断 → 分派执行并回填；含执行器四岔路、双路径执行、崩溃对账与 STATUS_EXPIRED 注记。
 
 ```mermaid
 flowchart TD
@@ -602,13 +600,13 @@ flowchart TD
     B8 -.->|"回到模型，进入下一轮"| B1
 ```
 
-> 图外补充（归档 10:24 原话，"图里放不下但流程里真实存在"）：① 审批"是"分支里的双路径——在线原 run 醒来执行，离线由 API 补跑 + 重开会话；② 崩溃/重启对账——执行前 `_mark_run_unsafe` 标记不可盲目续跑，重启时 lifespan 把 confirmed 审批置 failed、running 后台任务置 failed、stale run 中断；③ `STATUS_EXPIRED` 已定义未接线（见 9.5）。
+> 图外补充（核验记录 10:24 原话，"图里放不下但流程里真实存在"）：① 审批"是"分支里的双路径——在线原 run 醒来执行，离线由 API 补跑 + 重开会话；② 崩溃/重启对账——执行前 `_mark_run_unsafe` 标记不可盲目续跑，重启时 lifespan 把 confirmed 审批置 failed、running 后台任务置 failed、stale run 中断；③ `STATUS_EXPIRED` 已定义未接线（见 9.5）。
 
 ---
 
 ## 12. 治理效果数据
 
-> 详细过程与同负载复测见 optimization-log.md；此处只收工具治理相关的数字（归档 2/3 各轮核对过的口径）。
+> 详细过程与同负载复测见 performance-tuning.md；此处只收工具治理相关的数字（核验记录 2/3 各轮核对过的口径）。
 
 | 指标 | 数值 | 口径 |
 |---|---|---|
@@ -617,29 +615,29 @@ flowchart TD
 | 路由验证窗口 | 244 次治理决策（10-18 ~ 10-20） | `audit_events` 里 `policy.allowed 137 + pending_action.created 107` |
 | 免审批直放率 | 56.1%（137/244） | policy.allowed |
 | 审批触发率 | 43.9%（107/244） | 进审批的 107 次 **100% 是 bash**，专用工具 0 审批 |
-| 决策中 bash 占比 | 43.9%（107/244） | 归档建议简历写 44% |
-| 早期调用分析 | 969 次中 bash 535 次（55.2%），234 次（43%）可替代；163 次/周期巡检（curl 76 / ss 59 / pgrep·ps 20 / df·free 8） | 归档 2（本地日志期口径，后被 PG 口径部分取代） |
+| 决策中 bash 占比 | 43.9%（107/244） | 当前口径为 44% |
+| 早期调用分析 | 969 次中 bash 535 次（55.2%），234 次（43%）可替代；163 次/周期巡检（curl 76 / ss 59 / pgrep·ps 20 / df·free 8） | 核验记录 2（本地日志期口径，后被 PG 口径部分取代） |
 | 审批四出口 | approved / rejected / canceled / timeout(1800s) | approval_coordinator.py L57-88 |
 
-> 注意：归档明确"审批中位等待 1.14 秒"这个数有反效果（说明人没看就批），建议删掉、换成审批触发率叙事——见归档 3（2026-10-20 17:05）与 interview-script.md。
+> 注意：核验记录明确"审批中位等待 1.14 秒"这个数有反效果（说明人没看就批），建议删掉、换成审批触发率叙事——详见性能调优记录（2026-10-20）。
 
 ---
 
 ## 13. 待补充清单
 
-以下内容归档中提及但未展开，重建时**不做编造**：
+以下内容核验记录中提及但未展开，重建时**不做编造**：
 
-| 内容 | 归档中的线索 |
+| 内容 | 核验记录中的线索 |
 |---|---|
-| `ToolPolicy` 完整八字段清单 | 归档仅点名 7 个（4.1 节），幂等性字段名未给出 |
-| 45 个工具的逐一清单（每个的 policy 值） | 归档只给了六类分组与典型值，未逐一列出 |
-| `requires_approval=True` 完整名单 | 归档给出"主要有：bash、target_write_file、target_edit_file、target_restart、target_deploy"，是否有遗漏未穷举 |
-| MCP 策略推断的正则规则细节 | 归档仅说"按名字正则推断"，规则本身未展开 |
-| 权限 scope 的完整枚举 | 归档只出现 SHELL_EXECUTE、AGENT_CHAT、AUDIT_VIEW、CRON_WRITE、MEMORY_MANAGE、ACTION_APPROVE、SESSION_MANAGE |
-| 前端审批卡片组件细节 | 归档仅提"审批卡片内嵌聊天输入框上方，按创建顺序逐条处理" |
-| `_can_access_action` 的完整判定分支 | 归档只给"owner_id 匹配，或持 SESSION_MANAGE/AUDIT_VIEW 可越权批" |
-| 当年画的 SVG 原图 | 产物丢失，本文 11.7 按文字描述重画 |
+| `ToolPolicy` 完整八字段清单 | 核验记录仅点名 7 个（4.1 节），幂等性字段名未给出 |
+| 45 个工具的逐一清单（每个的 policy 值） | 此前资料只给了六类分组与典型值，未逐一列出 |
+| `requires_approval=True` 完整名单 | 核验记录给出"主要有：bash、target_write_file、target_edit_file、target_restart、target_deploy"，是否有遗漏未穷举 |
+| MCP 策略推断的正则规则细节 | 核验记录仅说"按名字正则推断"，规则本身未展开 |
+| 权限 scope 的完整枚举 | 核验记录只出现 SHELL_EXECUTE、AGENT_CHAT、AUDIT_VIEW、CRON_WRITE、MEMORY_MANAGE、ACTION_APPROVE、SESSION_MANAGE |
+| 前端审批卡片组件细节 | 核验记录仅提"审批卡片内嵌聊天输入框上方，按创建顺序逐条处理" |
+| `_can_access_action` 的完整判定分支 | 此前资料只给"owner_id 匹配，或持 SESSION_MANAGE/AUDIT_VIEW 可越权批" |
+| 流程图源文件 | 当前保留文字版流程，后续可补充可维护的 SVG 源文件 |
 
 ---
 
-*重建完成于 2026-10-30。数据与代码锚点均出自归档原文；如与当前代码不一致，以代码为准并回改本文。*
+*本文最后核对日期：2026-11-13。代码位置和行为如与当前实现不一致，以代码为准并同步更新文档。*

@@ -1,4 +1,4 @@
-# Evaluation Regression CI
+# 评估回归 CI
 
 The regression workflow compares two evaluation reports without committing
 case data, answers, or API keys to the repository.

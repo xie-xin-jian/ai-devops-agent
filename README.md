@@ -533,12 +533,13 @@ tests/               Unit and integration tests
 
 ## 文档
 
-- `docs/project-map.md`：代码地图和主链路
-- `docs/source-map.md`：文件级事实索引
-- `docs/context-compression-reference.md`：上下文压缩机制
-- `docs/evaluation-ci.md`：评估回归工作流
-- `docs/tool-reference.md`：工具参数与策略
-- `docs/pitfall-log.md`：已知问题和排障记录
+- `docs/software-manual.md`：功能操作、架构、代码结构和运维手册
+- `docs/architecture.md`：系统架构、主链路和状态机
+- `docs/tools-and-policies.md`：工具注册、策略和执行流程
+- `docs/context-management.md`：上下文管理、压缩和恢复设计
+- `docs/evaluation-regression-ci.md`：评估回归 CI
+- `docs/incident-postmortems.md`：工程故障复盘与改进记录
+- `docs/performance-tuning.md`：性能与成本调优记录
 
 ## License
 

@@ -1,8 +1,8 @@
-# 项目完整地图
+# 系统架构与执行链路
 
-底稿：[source-map.md](source-map.md)。本图只画主干与旁支，行号均已回源码核对；未读到的分支标"未确认"。
+本文描述系统分层、主链路、关键分支和状态机。代码位置和行为以当前实现为准。
 
-## 0. 20 行速记版
+## 0. 执行链路摘要
 
 ```
 run.py → uvicorn → api.main(BearerAuthMiddleware) → routers

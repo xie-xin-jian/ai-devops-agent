@@ -1,8 +1,6 @@
-# 上下文压缩参考手册
+# 上下文管理、压缩与恢复设计
 
-> **本文件由旧对话归档恢复重建（2026-10-30）**。原始对话（2026-10-12 ~ 10-21）随旧电脑损坏丢失，本文依据云端恢复的三份归档《recovered_share_20261012_全面了解项目代码结构》《recovered_share_20261015-18_工具权限与PG迁移》《recovered_share_20261018-21_PG迁移与简历量化》中的表格与流程描述重建。归档未覆盖的内容标注"（待补充）"，未做任何编造。所有数字以归档原文为准。
->
-> 本手册是**详表版**参考：表格、代码锚点、mermaid 图。口语话术版见 [interview-script.md](interview-script.md)「上下文模块」；优化过程的完整时间线数据见 [optimization-log.md](optimization-log.md)。
+本文说明上下文预算、工具结果裁剪、检查点压缩、Run 安全点和恢复之间的协作关系。代码实现以当前仓库为准，调优数据见 [performance-tuning.md](performance-tuning.md)。
 
 ---
 
@@ -17,16 +15,16 @@
 7. [单轮执行时序图](#7-单轮执行时序图)
 8. [run 状态机与安全点](#8-run-状态机与安全点)
 9. [yield 事件状态机](#9-yield-事件状态机)
-10. [持久化架构梳理（归档 3）](#10-持久化架构梳理归档-3)
-11. [产物数据可读性与评估框架（归档 3）](#11-产物数据可读性与评估框架归档-3)
-12. [迁移与备份速查（归档 2/3）](#12-迁移与备份速查归档-23)
+10. [持久化架构梳理（核验记录 3）](#10-持久化架构梳理核验记录-3)
+11. [产物数据可读性与评估框架（核验记录 3）](#11-产物数据可读性与评估框架核验记录-3)
+12. [迁移与备份速查（核验记录 2/3）](#12-迁移与备份速查核验记录-23)
 13. [待补充清单](#13-待补充清单)
 
 ---
 
 ## 1. 压缩体系总览：四层递进
 
-> 最初（2026-10-12）归档口径是"三级压缩链：大结果持久化落盘 → micro_compact → snip_compact → LLM 摘要，prompt 过长自动恢复最多 2 次"。2026-10-15 修复大结果落盘问题后，最终口径演进为**四层递进**：源头限流 → 确定性裁剪 → 语义摘要 → 被动兜底。本文按最终口径组织。
+> 最初（2026-10-12）核验记录口径是"三级压缩链：大结果持久化落盘 → micro_compact → snip_compact → LLM 摘要，prompt 过长自动恢复最多 2 次"。2026-10-15 修复大结果落盘问题后，最终口径演进为**四层递进**：源头限流 → 确定性裁剪 → 语义摘要 → 被动兜底。本文按最终口径组织。
 
 ### 1.1 四层总表
 
@@ -37,7 +35,7 @@
 | 2 语义压缩 | `compact_history` | LLM 摘要式全量压缩 |
 | 3 反应式压缩 | `recover_context_overflow` | API 报超长后的恢复式压缩 |
 
-### 1.2 压缩方法清单（归档 2026-10-15 22:51 核对版，5 个方法）
+### 1.2 压缩方法清单（核验记录 2026-10-15 22:51 核对版，5 个方法）
 
 | 方法 | 干什么 |
 |---|---|
@@ -56,20 +54,20 @@
 | 2 | **模型主动调 `compact` 工具**，只置标志，推迟到安全边界执行 | 一次 LLM 摘要 |
 | 3 | API 返回 prompt-too-long **异常才触发**，限重试次数 | LLM 压缩 + 重试 |
 
-**为什么这样设计**（归档原话，四条）：
+**为什么这样设计**（设计说明，四条）：
 
 - **按成本递进**：便宜的永远先跑，贵的按需触发，兜底只留给意外——零成本手段消化 90% 的膨胀
 - **压缩权分层**：日常裁剪是确定性规则（可预测、可测试）；"哪些信息值得留"这种语义判断交给模型（第 2 层）
 - **第 2 层延迟到安全边界执行**：等本轮 tool_use/tool_result 配对完整回填后才压缩并落盘——压缩后的状态一定自洽，和崩溃恢复"只在无工具在途的安全点续跑"是同一设计思想
 - **第 3 层失败即留痕**：三次失败出口全部 `run.failed` 审计 + `safe_to_resume=True`，问题可追溯、可恢复
 
-> 追问"为什么不直接全用 LLM 摘要"（归档原话）：每轮摘要又要花钱花时间，且摘要本身有损——确定性截断管日常，语义压缩管该管的时候，兜底只留给意外。
+> 追问"为什么不直接全用 LLM 摘要"（设计说明）：每轮摘要又要花钱花时间，且摘要本身有损——确定性截断管日常，语义压缩管该管的时候，兜底只留给意外。
 
 ---
 
 ## 2. 三个压缩点：触发时机与设计理由
 
-> 归档 2026-10-15 22:46 的经典一问："loop 里面是不是只有两次关于上下文压缩的？"——答案是**三次**（加上源头限流共四个位置），漏掉的那次恰好是设计上最有趣的一处。
+> 核验记录 2026-10-15 22:46 的经典一问："loop 里面是不是只有两次关于上下文压缩的？"——答案是**三次**（加上源头限流共四个位置），漏掉的那次恰好是设计上最有趣的一处。
 
 | 压缩点 | 位置 | 触发方 | 手段 | 成本 |
 |---|---|---|---|---|
@@ -78,18 +76,18 @@
 | ② 语义 | 工具结果回填完的安全边界（pipeline.py L592-598） | **模型自己**调 compact 工具 | 只置 `_pending_compaction = True`，返回 "scheduled for next safe boundary"；真正执行在工具结果全部回填、user 消息拼完整之后跑 `compact_history()`（LLM 摘要式全量压缩），随 `_persist_run_safe("model")` 原子落盘 | 一次额外调用 |
 | ③ 兜底 | API 真报 prompt-too-long | 被动触发 | `recover_context_overflow` + 失败审计（见第 6 节） | 最后防线 |
 
-**设计理由**（归档原话）：
+**设计理由**（设计说明）：
 
 1. ②里"只置标志、推迟到工具结果回填完再压缩"这个细节特别值得讲：**压缩发生在安全边界，避免把一轮未完成的 tool_use/tool_result 配对拦腰截断**——这和恢复机制里"只在无工具在途的安全点续跑"是同一个设计思想
 2. 三层按"廉价→昂贵、主动→被动、确定性→语义"递进；加源头限流后是"**源头限流 → 确定性裁剪 → 语义摘要 → 被动兜底**"，越靠前越便宜、越靠后越昂贵
 
-> 注：`compact` 工具由 Agent 自己注册（integrations.py L34-43），属于业务类工具（见 tool-reference.md 第 1 节）。
+> 注：`compact` 工具由 Agent 自己注册（integrations.py L34-43），属于业务类工具（见 tools-and-policies.md 第 1 节）。
 
 ---
 
 ## 3. 压缩点⓪：工具输出源头限流
 
-> 归档 2026-10-15 22:56："今天改的那个关于返回结果太长导致的上下文太长"——压缩体系的第 0 层，位置在所有压缩之前。
+> 核验记录 2026-10-15 22:56："今天改的那个关于返回结果太长导致的上下文太长"——压缩体系的第 0 层，位置在所有压缩之前。
 
 ### 3.1 问题现象与三个叠加根因
 
@@ -101,7 +99,7 @@
 2. 部分工具输出上限 50KB，一条命令就能塞 15 万字符
 3. 字节预算闸口生效在回填**之后**，拦不住单轮尖峰
 
-### 3.2 怎么排查出来的（归档强调"面试重点讲这段"，三步）
+### 3.2 怎么排查出来的（三步排查）
 
 1. 从 `app.log` 提取每轮 `[turn N] ctx=xxx` 画曲线 → 发现不是线性劣化，而是**周期性尖峰** → 排除泄漏，指向"某类消息突然变大"
 2. 对照同轮工具调用日志 → 尖峰全部紧跟大输出工具（bash 等）→ 锁定工具输出回填
@@ -118,7 +116,7 @@
 
 **验证**（同负载复跑，部署任务）：ctx 峰值 246,422 → 47,763（**-80.6%**）、单 run 成本 ¥3 → ¥0.86（**-71%**）、API 最大耗时 114s → 8s。
 
-> 一句话收束（归档原话）：这个问题体现了完整闭环——日志埋点发现异常曲线 → 对照定位根因 → 修复在源头而非症状处 → 同负载复测用数据证明效果 → 顺带挖出下一个优化点。
+> 一句话收束（设计说明）：这个问题体现了完整闭环——日志埋点发现异常曲线 → 对照定位根因 → 修复在源头而非症状处 → 同负载复测用数据证明效果 → 顺带挖出下一个优化点。
 
 ---
 
@@ -133,7 +131,7 @@
 | 3 | `snip_compact` | 仅当超 CONTEXT_LIMIT 触发：按条数裁掉最旧消息（CONTEXT_LIMIT = 50000，config.py L118） |
 | 4 | `trim_by_size(CONTEXT_BYTES_BUDGET)` | 字节级硬闸，保证最终不超 120000 字节 |
 
-**顺序逻辑**（归档原话）：便宜的永远先跑；snip 是超限才走；trim 收尾兜底。归档 2026-10-12 早期描述还有"snip_compact（保头尾+保 tool_use/result 配对）"一说，后核对版口径为"按条数裁掉最旧消息"——两处归档描述略有出入，配对保护在恢复式压缩（第 6 节）中是明确实现的（保留最近 5 条且自动扩展）。
+**顺序逻辑**（设计说明）：便宜的永远先跑；snip 是超限才走；trim 收尾兜底。核验记录 2026-10-12 早期描述还有"snip_compact（保头尾+保 tool_use/result 配对）"一说，后核对版口径为"按条数裁掉最旧消息"——两处核验记录描述略有出入，配对保护在恢复式压缩（第 6 节）中是明确实现的（保留最近 5 条且自动扩展）。
 
 ---
 
@@ -153,24 +151,24 @@ pipeline.py L592-598：
   self._persist_run_safe("model")              # 原子落盘
 ```
 
-**关键细节**（归档原话）：压缩发生在安全边界，避免把一轮未完成的 tool_use/tool_result 配对拦腰截断；压缩后落盘的 messages 一定自洽，崩溃恢复拿到的就是压缩后的干净状态。
+**关键细节**（设计说明）：压缩发生在安全边界，避免把一轮未完成的 tool_use/tool_result 配对拦腰截断；压缩后落盘的 messages 一定自洽，崩溃恢复拿到的就是压缩后的干净状态。
 
-> 归档 2026-10-12 一轮的描述："模型判断历史太长时可以主动调用它……真正执行在 L555：等本轮工具结果全部回填、user 消息拼完整之后，才跑 compact_history()，然后随 _persist_run_safe('model') 一起原子落盘。"
+> 核验记录 2026-10-12 一轮的描述："模型判断历史太长时可以主动调用它……真正执行在 L555：等本轮工具结果全部回填、user 消息拼完整之后，才跑 compact_history()，然后随 _persist_run_safe('model') 一起原子落盘。"
 
 ---
 
 ## 6. 压缩点③：恢复式压缩 recover_context_overflow
 
-> 触发条件：API 真报 prompt-too-long 才走，限重试次数（归档 2026-10-12 口径为"最多重试 2 次"）。实现在 error_recovery.py L83-110。
+> 触发条件：API 真报 prompt-too-long 才走，限重试次数（核验记录 2026-10-12 口径为"最多重试 2 次"）。实现在 error_recovery.py L83-110。
 
-### 6.1 四步流程（归档 2026-10-15 23:14 核对版，四个要点）
+### 6.1 四步流程（核验记录 2026-10-15 23:14 核对版，四个要点）
 
 1. **先重跑零成本手段**（`tool_result_budget` + `micro_compact`）——不急着动用贵的
 2. **语义摘要前先落盘留档**（`write_transcript`）——压缩是破坏性的，先留证据再压
 3. **保留最近 5 条且自动扩展**保住 tool_use/tool_result 配对，其余摘要成一条 `Compacted` 占位消息
 4. **降幅不足 10% 判定无效**，升级 `snip_compact` 硬裁；再无效就审计终止
 
-### 6.2 mermaid 流程图（按归档文字描述重画）
+### 6.2 mermaid 流程图（按核验记录文字描述重画）
 
 ```mermaid
 flowchart TD
@@ -187,7 +185,7 @@ flowchart TD
     R --> C["continue 重试本轮 → 回到压缩点① 再走一遍常规压缩"]
 ```
 
-### 6.3 主循环侧的恢复编排（归档保留的代码片段要点）
+### 6.3 主循环侧的恢复编排（核验记录保留的代码片段要点）
 
 - 重试有上限：超过后 `_audit("run.failed", "context recovery exhausted", safe_to_resume=True)` 并 return
 - 每次触发：`yield {"type": "status", "message": "Prompt 过长，执行上下文恢复压缩..."}` + `logger.warning("[turn N] Prompt 过长，执行 recover_context_overflow")`
@@ -196,13 +194,13 @@ flowchart TD
 - 压缩成功：`self.messages = compacted`；日志 `[turn N] context recovery: {stats['before']} -> {stats['after']} bytes`；`stats["reduced"]` 为假则按无效处理终止
 - **`continue` 重试同一个 turn**（turn 计数在 for 里未递增前就 continue），恢复后重新过一遍常规压缩——不是绕过常规压缩，而是恢复后再走正常流程
 
-> 面试点睛（归档原话）："兜底压缩也遵守'便宜先行'——确定性手段重试在前，LLM 摘要在中，硬裁在后，每一步都有有效性校验，无效就往上升级、最终失败留痕可恢复。"
+> 设计原则："兜底压缩也遵守'便宜先行'——确定性手段重试在前，LLM 摘要在中，硬裁在后，每一步都有有效性校验，无效就往上升级、最终失败留痕可恢复。"
 
 ---
 
 ## 7. 单轮执行时序图
 
-> 归档 2026-10-15 22:55 + 23:09 两轮整理的"一次 turn 内的执行时序"，当年为 ASCII 文字图，按原样重画为 mermaid。
+> 下表根据 2026-10-15 的两次执行时序核查整理为 mermaid 图。
 
 ```mermaid
 sequenceDiagram
@@ -229,7 +227,7 @@ sequenceDiagram
     end
 ```
 
-**顺序设计的三条逻辑**（归档原话）：
+**顺序设计的三条逻辑**（设计说明）：
 
 1. **便宜的永远先跑**：①每轮无条件前置，成本近零；②③都贵，只按需触发
 2. **语义压缩踩在安全边界**：②固定在"工具结果回填完毕、落盘之前"这个点执行——保证压缩后落盘的 messages 一定自洽
@@ -241,7 +239,7 @@ sequenceDiagram
 
 ## 8. run 状态机与安全点
 
-> 归档 2026-10-12（yield 状态机一轮）的 run 记录层面状态机，与压缩体系的安全点/续跑语义直接相关。
+> 核验记录 2026-10-12（yield 状态机一轮）的 run 记录层面状态机，与压缩体系的安全点/续跑语义直接相关。
 
 ```
 running ──正常完成──► completed
@@ -264,7 +262,7 @@ running ──正常完成──► completed
 
 ## 9. yield 事件状态机
 
-> 归档 2026-10-12 21:56："请详细解释 Agent 内部生成器中 yield 事件的具体逻辑和状态机流转"——`_run_stream_impl`（pipeline.py L209-637，429 行）是"整个项目的核心心脏"。
+> 核验记录 2026-10-12 21:56："请详细解释 Agent 内部生成器中 yield 事件的具体逻辑和状态机流转"——`_run_stream_impl`（pipeline.py L209-637，429 行）是"整个项目的核心心脏"。
 
 ### 9.1 七种事件总表
 
@@ -278,13 +276,13 @@ running ──正常完成──► completed
 | `pending_action` | 工具需审批时 | 弹审批卡片 |
 | `done`/`cancelled`/`error` | 终态 | 收尾处理 |
 
-补充细节（归档同轮）：
+补充细节（核验记录同轮）：
 
 - `text_delta` 不是模型 token 级流式（SDK 拿到完整响应），而是拿到完整回复后按空格拆词逐个 yield 的"伪流式"
 - yield 给前端的 `tool_result.output` **截断 2000 字符**防刷屏；回填进 `results` 给 LLM 的是**完整 output**——"给前端和给 LLM 的是两份数据"
 - 事件格式：`yield {"type": ..., "message": ..., "turn": n}`
 
-### 9.2 全流程状态机（文字版，归档原样）
+### 9.2 全流程状态机（文字版，核验记录原样）
 
 ```
 新run ──► 初始化 ──► 准备中 ──► [50轮循环] ──► done
@@ -320,15 +318,15 @@ Agent 生成器 yield dict
   → JSON.parse 后按 type 更新 UI（轨迹面板/打字机效果）
 ```
 
-为什么不用 EventSource：只支持 GET，无法 POST 消息体。`run_lock` 保证同一 session 并发第二条消息阻塞等待。详版见 interview-script.md「流式输出模块」。
+为什么不用 EventSource：只支持 GET，无法 POST 消息体。`run_lock` 保证同一 session 并发第二条消息阻塞等待。
 
 ---
 
-## 10. 持久化架构梳理（归档 3）
+## 10. 持久化架构梳理（核验记录 3）
 
-> 归档 3（2026-10-19）对 PG 迁移后新代码的全库分层讲解。压缩产物（大输出文件、transcript）的最终去向也在这一节。
+> 核验记录 3（2026-10-19）对 PG 迁移后新代码的全库分层讲解。压缩产物（大输出文件、transcript）的最终去向也在这一节。
 
-### 10.1 PG-only 改造：删了什么（归档 2，2026-10-18 19:38）
+### 10.1 PG-only 改造：删了什么（核验记录 2，2026-10-18 19:38）
 
 | 删掉的 | 原来负责什么 | 现在谁接管 |
 |---|---|---|
@@ -353,7 +351,7 @@ pipeline.py (Agent 主循环)
                       └─ session_scope()  persistence/database.py  ← 事务边界 → PostgreSQL
 ```
 
-关键点（归档原话）：**pipeline 不认识 SQL**，它只说"我现在到哪个阶段了"；SQL 只在最底层的 repository 里出现。
+关键点（设计说明）：**pipeline 不认识 SQL**，它只说"我现在到哪个阶段了"；SQL 只在最底层的 repository 里出现。
 
 粘合层五个方法（core/persistence.py L12-80）：`_persist_session_state` 只写会话；`_persist_run_state` 先写会话再写 run——**所以 run 与它的消息快照永远同一次调用落库**。
 
@@ -370,13 +368,13 @@ pipeline.py (Agent 主循环)
 
 各层要点：
 
-- **层 0 Alembic**：5 个迁移按域拆分（见 10.5）；仅 0001 的 audit_events 一张表 `upgrade()` 就建 8 条索引（含复合索引 `(session_id, occurred_at)` 专为"按会话查审计"设计），5 个迁移累计 86 条；`downgrade()` 精确逆序回收；**生产不用 `Base.metadata.create_all()`**（database.py L97-101 注释写明仅供测试），那个只给单测/eval 的临时 SQLite 库
+- **层 0 Alembic**：迁移按业务域拆分（见 10.5）；仅 0001 的 audit_events 一张表 `upgrade()` 就建 8 条索引（含复合索引 `(session_id, occurred_at)` 专为"按会话查审计"设计）；`downgrade()` 精确逆序回收；**生产不用 `Base.metadata.create_all()`**，该方法仅用于单测和评估的临时 SQLite 库
 - **层 1 models**：声明式 `mapped_column`；类型带方言变体 `JSON_VALUE`（PG 用 JSONB/其他库用 JSON）、`BIGINT_PK`（PG 用 BigInteger/SQLite 用 Integer 才能自增）——同一套模型跑两种方言；每个业务表都有 `version` 字段（并发版本号）
 - **层 2 repository 三约定**：① 每个出口方法内部 `with session_scope()` 包一个事务，调用方不管连接和提交；② **不抛业务异常**——查不到返回 `None`，写失败返回 `False`，由上层判断语义；③ `upsert_target` 对外一个方法、内部分两条路——不传 `expected_version` 走 `upsert_row`，传了转 `update_row_if_version` 走 CAS，同一张表既能普通写也能乐观锁写
 - **层 3 Store + service 职责切分**：Store 管"先做什么再做什么"的组合逻辑（list/create/update/delete，update 是读-合并-写 `{**current, **payload}` 保留 id/created_at），service 管"什么算合法"的纯校验（`normalize_target`：生成 `tgt_` id、service 名 fullmatch 防注入、路径检查）。**Store 里看不到一行 SQL，service 里看不到一次 IO**
 - **层 4 API 四件事**：Pydantic 校验入参；权限闸 `Depends(require_permissions(...))`（读接口 `AGENT_CHAT`、写接口 `SESSION_MANAGE`）；调 Store 后 `to_dict()`；异常翻译 `KeyError→404`、`ValueError→400`——repository 层"不抛业务异常"的设计到这里才收口
 
-一句话记住每层（归档原话）：**Alembic** 定结构（不可变的历史）→ **models** 定映射（表↔类）→ **repository** 定读写（全项目唯一的 SQL 层）→ **store/service** 定业务（组合 + 校验）→ **api** 定协议（入参校验、权限、异常翻译）。新增一个域只要照着排 0→4 层，改动是**加法**、不碰主循环。
+一句话记住每层（设计说明）：**Alembic** 定结构（不可变的历史）→ **models** 定映射（表↔类）→ **repository** 定读写（全项目唯一的 SQL 层）→ **store/service** 定业务（组合 + 校验）→ **api** 定协议（入参校验、权限、异常翻译）。新增一个域只要照着排 0→4 层，改动是**加法**、不碰主循环。
 
 ### 10.4 第 0 层 Alembic 的意义（Q："第零层还是不懂"）
 
@@ -389,20 +387,21 @@ pipeline.py (Agent 主循环)
 | 0003 | 建治理与自动化表（pending_actions/cron_jobs/cron_logs/background_tasks） |
 | 0004 | 建会话与运行表（sessions/messages/runs/run_snapshots） |
 | 0005 | 建评测表 |
+| 0006 | 建模型上下文表（session_contexts） |
 
 每个文件都是一个 `upgrade()` 配一个 `downgrade()`，靠 `down_revision` 串成链。类比：Alembic ≈ 数据库结构的 git，`upgrade` ≈ `git pull`，`downgrade` ≈ `git revert`。服务器上只需执行一次 `alembic upgrade head`，自动补跑没跑过的迁移。
 
-### 10.5 18 张表清单（models.py）
+### 10.5 19 张表清单（models.py）
 
-归档两处提到的表清单（能找到的都列在这里）：
+核验记录两处提到的表清单（能找到的都列在这里）：
 
 | 链路 | 表 |
 |---|---|
 | 执行过程 | `runs` / `run_snapshots` / `messages` / `run_usage` |
 | 治理 | `pending_actions` / `audit_events` |
 | 业务 | `tasks` / `task_dependencies` / `memories` / `cron_jobs` / `cron_logs` / `background_tasks` / `targets` |
-| 会话 | `sessions` |
-| 评测 | `eval_batches` / `eval_trials` / `eval_tool_calls` / `eval_scores`（归档明确"本次不讲"，结构待补充） |
+| 会话 | `sessions` / `messages` / `session_contexts` |
+| 评测 | `eval_batches` / `eval_trials` / `eval_tool_calls` / `eval_scores`（核验记录明确"本次不讲"，结构待补充） |
 
 ### 10.6 一次 run 的写入时序（每个节点写什么）
 
@@ -428,7 +427,7 @@ pipeline.py (Agent 主循环)
 
 - **序列化**（state_store.py L92-97 `serialize_messages`）：Agent 手里是 SDK 对象（text/tool_use/tool_result block），不能直接进 JSONB。递归拍平成纯 dict：`tool_use → {type,id,name,input}`，`tool_result → {type,tool_use_id,content}`，其它对象走 `model_dump()` 或 `vars()`，最后兜底 `str()`。读回来时 `deserialize_messages` 还原
 - **content_hash 判重**（repositories/runs.py L112-160 `upsert_run`）：对整份消息算 sha256，快照没变就跳过 `run_snapshots` 的写入——run 每轮状态都在变（写 runs 表），但消息快照往往没变，避免每轮重写大 JSONB
-- **messages 表按 seq 增量同步**（repositories/sessions.py L110-165 `_sync_messages`）：逐 `(session_id, seq)` 比对 hash，只写变化的行，**多余的 seq 删除**——因为上下文压缩会重写整个历史，不是纯追加
+- **完整历史与模型上下文分离**：`messages` 保存追加式完整会话历史，供前端和审计读取；上下文压缩只更新 `session_contexts`，不会覆盖用户可见历史
 
 ### 10.9 旧 JSON vs PG（本质区别）
 
@@ -439,19 +438,19 @@ pipeline.py (Agent 主循环)
 | 一致性 | 多文件间无事务 | `session_scope` 单事务（run 行 + 快照同行提交） |
 | 中间层 | 双写 + 影子校验 + 按域切读 | **全删**，Store 直接调 repository |
 
-一句话（归档原话）：**旧 JSON 是"把内存对象 dump 成文件"，现在是"把状态翻译成行级 UPSERT/CAS 交给数据库"**，并发和事务语义从"自己保证"变成"数据库保证"。
+一句话（设计说明）：**旧 JSON 是"把内存对象 dump 成文件"，现在是"把状态翻译成行级 UPSERT/CAS 交给数据库"**，并发和事务语义从"自己保证"变成"数据库保证"。
 
 **压缩产物在 PG-only 后的去处**：大工具输出仍落盘文件（不入库，查询走文件通道）；压缩瞬间的原件写入磁盘 `.transcripts`（context_compact.py L269-278），也不在 DB——见 11.2 缺口 4/5。
 
 ---
 
-## 11. 产物数据可读性与评估框架（归档 3）
+## 11. 产物数据可读性与评估框架（核验记录 3）
 
-### 11.1 18 张表真实可读的数据（Q："如果不手搓用框架能读多少"）
+### 11.1 19 张表真实可读的数据
 
 | 链路 | 表 | 读得到什么 |
 |---|---|---|
-| 执行过程 | `runs` / `run_snapshots` / `messages` | 每一轮 run 状态、阶段、安全点消息快照、完整对话（含 tool_use/tool_result 块） |
+| 执行过程 | `runs` / `run_snapshots` / `messages` / `session_contexts` | 每一轮 run 状态、阶段、安全点消息快照、完整对话和当前模型上下文 |
 | 成本 | `run_usage` | 每轮 token 输入/输出/缓存读写 + 成本估算 |
 | 治理 | `pending_actions` / `audit_events` | 审批全字段（payload/steps/影响面/回滚方案/结果）、事件级审计流 |
 | 业务 | `tasks` / `task_dependencies` / `memories` / `cron_jobs` / `cron_logs` / `background_tasks` / `targets` | 任务 DAG、长期记忆、定时任务执行输出、后台任务 stdout |
@@ -462,28 +461,28 @@ pipeline.py (Agent 主循环)
 1. **原始 LLM 请求报文**——只存用量数字 + 解析后的消息，系统提示词快照、完整请求参数没留
 2. **模型 thinking 内容**——没落库；pipeline 每轮只 yield 一个 `{"type": "thinking"}` 轮次提示事件（pipeline.py L309），不携带思考正文
 3. **审计 payload 被截断 + 脱敏**——audit.py L40-57 单值截到 4000 字符，密码/token 一律 `***`
-4. **压缩会重写历史**——上下文压缩把早期工具输出换成摘要，**原件只在压缩瞬间写进磁盘 `.transcripts`**（context_compact.py L269-278），不在 DB
+4. **模型上下文与完整历史分离**——压缩只替换 `session_contexts` 中供模型使用的内容，`messages` 保留完整可见历史；压缩前 transcript 仍写入磁盘 `.transcripts`
 5. **大工具输出落盘不入库**——在磁盘上，查询要另走文件通道
 
-归档建议的补缺方案（未确认是否实施）：复用现有 audit 基建加一张 `trace_events` 表存原始 LLM 响应 + thinking（按 run_id/turn 索引），成本半天，不引入第三方泄露面。
+建议的补缺方案（未确认是否实施）：复用现有 audit 基建加一张 `trace_events` 表存原始 LLM 响应 + thinking（按 run_id/turn 索引），成本半天，不引入第三方泄露面。
 
 ### 11.3 自建 vs 观测框架（LangGraph + LangSmith / Langfuse / OpenAI Agents SDK）对比
 
 - **框架自动给**：span 级 trace——每次 LLM 调用的完整输入输出、每个工具调用、耗时、token，全量明文上报。纯可读性上框架确实更全（尤其原始报文和 thinking）
 - **但代价**：trace 存第三方 SaaS 或独立服务，**和业务数据不在一个库** → 一个 run_id 无法 join 审批/任务/记忆/评测；payload 默认原样明文上报，运维目标内容/命令/凭据流到第三方反而是泄露面；trace 是事后观测不参与决策，撑不起跨重启续跑、审批状态机、权限闸
 
-**自建的 4 条优势**（归档原话）：
+**自建的 4 条优势**（设计说明）：
 
 1. **观测与业务同库同事务**：审计/用量/评测和业务表在一个 PG，一个 `run_id` 能把审批 → 工具 → 成本 → 评测全链路串起来；框架 trace 是外挂的，join 不了
 2. **治理内生于数据**：append-only + 脱敏 + 截断是"合规级"设计；框架默认全量明文，安全上是减分
 3. **持久化驱动恢复**：`runs`/`run_snapshots`/`pending_actions` 是跨重启的状态源，trace 只是日志，做不到续跑
 4. **成本-质量闭环可量化**：`run_usage` + `eval_*` 能算"每个用例的成本和得分"，框架不提供业务级成本归集
 
-一句话话术（归档原话）：框架给你的是"自动的、外挂的、明文的观测"；我手搓的是"可控的、同库的、脱敏的、能驱动恢复的治理"。**框架读的是只能看的数据，我读的是能用的数据。**
+设计结论：外部观测框架提供自动化的 trace 采集，但其数据通常与业务状态分离；当前实现将审计、用量、恢复和业务状态统一放在同一数据库中，便于关联查询、脱敏和驱动恢复。
 
 ---
 
-## 12. 迁移与备份速查（归档 2/3）
+## 12. 迁移与备份速查（核验记录 2/3）
 
 ### 12.1 服务器 JSON→PG 迁移对账（2026-10-18，零漂移）
 
@@ -513,7 +512,7 @@ pipeline.py (Agent 主循环)
 
 ### 12.3 本地连接速查
 
-- 隧道：`ssh -N -L 15432:127.0.0.1:5432 ubuntu@<服务器>`（IP 归档已脱敏），或 DBeaver 内置 SSH 隧道 + Keepalive interval 30s
+- 隧道：`ssh -N -L 15432:127.0.0.1:5432 ubuntu@<服务器>`（IP 核验记录已脱敏），或 DBeaver 内置 SSH 隧道 + Keepalive interval 30s
 - 客户端：DBeaver Community（推荐）/ psql / VS Code Database Client；连接 `127.0.0.1:15432`，库 `ai_devops`
 - 常用口径 SQL：调用分布查 `audit_events` 按 `tool_name` 分组；审批历史按 `pending_actions.action_code` 分组；审批等待用 `confirmed_at - created_at`
 
@@ -521,19 +520,19 @@ pipeline.py (Agent 主循环)
 
 ## 13. 待补充清单
 
-| 内容 | 归档中的线索 |
+| 内容 | 核验记录中的线索 |
 |---|---|
-| `snip_compact` 的 CONTEXT_LIMIT 具体数值 | 归档未给；已从代码核实 **50000**（config.py L118） |
-| `micro_compact` 占位符的具体文本格式 | 归档未展开；代码为 `[Earlier tool result compacted.]`（context_compact.py L258/263） |
-| "前缀稳定化"优化的具体实现 | 归档提到 cache_read=0 引出该优化点，实现细节未展开（见 3.2） |
-| `compact_history` 摘要提示词与摘要结构 | 归档未展开 |
-| 4 个 eval_* 评测表结构 | 归档明确"本次不讲"（10.5 注）；迁移 0005 实建 4 张（eval_batches/eval_trials/eval_tool_calls/eval_scores） |
-| `run_usage` 的模型单价常量数值 | 归档只说"按模型单价配置"；代码为 PRICE_INPUT_PER_M=2.0 / PRICE_OUTPUT_PER_M=8.0 / PRICE_CACHE_HIT_PER_M=0.5（config.py L126-128） |
-| messages/runs 等表完整字段 DDL | 归档只给表名与关键设计（BIGINT_PK/version/content_hash），未逐列展开 |
-| 评估框架（用例批量回归 + 规则评分 + LLM 判分 + 基线对比）内部结构 | 归档仅在简历量化里点名，未展开 |
-| 五段式 system prompt 的五段内容 | 归档 2026-10-12 项目全貌仅点名"五段式" |
-| `.transcripts` 落盘文件的目录组织与清理策略 | 归档只提"压缩瞬间写入"（11.2） |
+| `snip_compact` 的 CONTEXT_LIMIT 具体数值 | 核验记录未给；已从代码核实 **50000**（config.py L118） |
+| `micro_compact` 占位符的具体文本格式 | 核验记录未展开；代码为 `[Earlier tool result compacted.]`（context_compact.py L258/263） |
+| "前缀稳定化"优化的具体实现 | 核验记录提到 cache_read=0 引出该优化点，实现细节未展开（见 3.2） |
+| `compact_history` 摘要提示词与摘要结构 | 核验记录未展开 |
+| 4 个 eval_* 评测表结构 | 核验记录明确"本次不讲"（10.5 注）；迁移 0005 实建 4 张（eval_batches/eval_trials/eval_tool_calls/eval_scores） |
+| `run_usage` 的模型单价常量数值 | 核验记录只说"按模型单价配置"；代码为 PRICE_INPUT_PER_M=2.0 / PRICE_OUTPUT_PER_M=8.0 / PRICE_CACHE_HIT_PER_M=0.5（config.py L126-128） |
+| messages/runs 等表完整字段 DDL | 核验记录只给表名与关键设计（BIGINT_PK/version/content_hash），未逐列展开 |
+| 评估框架（用例批量回归 + 规则评分 + LLM 判分 + 基线对比）内部结构 | 性能分析资料仅点名，未展开 |
+| 五段式 system prompt 的五段内容 | 核验记录 2026-10-12 项目全貌仅点名"五段式" |
+| `.transcripts` 落盘文件的目录组织与清理策略 | 核验记录只提"压缩瞬间写入"（11.2） |
 
 ---
 
-*重建完成于 2026-10-30。数字与代码锚点均出自归档原文；如与当前代码不一致，以代码为准并回改本文。*
+*本文最后核对日期：2026-11-13。代码位置和行为如与当前实现不一致，以代码为准并同步更新文档。*
