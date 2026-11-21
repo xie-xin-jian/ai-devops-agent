@@ -149,7 +149,7 @@ def main() -> int:
         run_root=run_root,
         batch_id=args.batch_id,
         label=args.label,
-        model_id=args.model,
+        model_id=args.model or app_config.MODEL_ID,
         trials_per_case=max(1, args.trials),
         parallel=max(1, args.parallel),
         categories=tuple(args.category),

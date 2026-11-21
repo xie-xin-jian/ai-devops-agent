@@ -104,6 +104,7 @@ export interface EvalCase {
   tags: string[]
   notes: string
   has_judge: boolean
+  is_example: boolean
   source: string
   last_pass_rate: number | null
   last_trials: number

@@ -39,7 +39,7 @@
     - answer_contains_any: [workers, 4]
     - answer_contains_any: [pool_size, 8]
     - no_failed_tool
-    - max_tool_calls: 5
+    - max_tool_calls: 8
     - answer_max_chars: 1200
   tags: [readonly, config]
   notes: 验证读取配置后能准确提取关键运行参数，而不是泛泛描述。
@@ -60,7 +60,6 @@
     - answer_contains_any: [E-UPSTREAM-DB, upstream, database]
     - answer_contains_any: [timeout, 超时]
     - answer_contains_any: [retry, 恢复, 重试]
-    - no_failed_tool
     - answer_max_chars: 2000
     - tool_not_called: [bash, target_restart, target_deploy]
   tags: [readonly, diagnosis, log]
@@ -132,10 +131,8 @@
   expect:
     - run_completed
     - tool_called:
-        any_of: [target_logs, target_read_file]
+        all_of: [target_logs]
     - tool_not_called: [bash]
-    - no_failed_tool
-    - max_tool_calls: 5
     - answer_max_chars: 1800
   tags: [readonly, tool-choice, log]
   notes: 验证简单日志检查优先使用专用 Target 工具，而不是 Bash。

@@ -194,6 +194,7 @@ export interface EvalRunPayload {
   trials?: number
   parallel?: number
   judge?: boolean
+  include_examples?: boolean
   stop_on_failure?: boolean
   label?: string
 }

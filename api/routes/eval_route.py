@@ -243,6 +243,7 @@ async def list_eval_cases(
             "tags": list(case.tags),
             "notes": case.notes,
             "has_judge": bool(case.judge_rubric),
+            "is_example": "example" in case.tags,
             "source": case.source,
             "last_pass_rate": stat.get("last_pass_rate"),
             "last_trials": stat.get("last_trials", 0),
@@ -368,6 +369,7 @@ class EvalRunRequest(BaseModel):
     parallel: int = 1
     judge: bool = False
     stop_on_failure: bool = False
+    include_examples: bool = False
     label: str = ""
 
 
@@ -399,6 +401,31 @@ def _auto_label(request: EvalRunRequest) -> str:
     if request.validate_only:
         return f"{scope} · 校验"
     return f"{scope} · {max(1, request.trials)} 次试跑"
+
+
+def _effective_scope(request: EvalRunRequest) -> tuple[list[str], list[str]]:
+    """Resolve a UI run scope to explicit case ids, minus teaching examples.
+
+    ``--case`` and ``--category`` are intersected by the CLI and neither can
+    express "everything except the two demo cases". Resolving the scope here
+    keeps scripts/run_eval.py and the evaluation core untouched.
+    """
+    if request.validate_only or request.include_examples:
+        return list(request.cases), list(request.categories)
+    from agent.evaluation.cases import load_cases
+
+    cases, _ = load_cases(_cases_dir())
+    excluded = {c.id for c in cases if "example" in c.tags}
+    if request.cases:
+        ids = [c for c in request.cases if c not in excluded]
+    elif request.categories:
+        ids = [
+            c.id for c in cases
+            if c.category in request.categories and c.id not in excluded
+        ]
+    else:
+        ids = [c.id for c in cases if c.id not in excluded]
+    return ids, []
 
 
 class _UIRun:
@@ -513,9 +540,15 @@ async def start_eval_run(
     args = [sys.executable, "scripts/run_eval.py", "--batch-id", batch_id]
     if request.validate_only:
         args.append("--validate-only")
-    for case in request.cases:
+    case_args, category_args = _effective_scope(request)
+    if not request.validate_only and not case_args and not category_args:
+        raise HTTPException(
+            status_code=400,
+            detail="所选范围只包含教学示例用例；请勾选「包含教学示例」或改选其他用例。",
+        )
+    for case in case_args:
         args += ["--case", case]
-    for category in request.categories:
+    for category in category_args:
         args += ["--category", category]
     if not request.validate_only:
         args += [

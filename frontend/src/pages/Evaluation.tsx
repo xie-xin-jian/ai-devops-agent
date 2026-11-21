@@ -489,7 +489,7 @@ function CasesTab({
     })
   }, [cases, query, category])
 
-  const allFilteredIds = filtered.map((c) => c.id)
+  const allFilteredIds = filtered.filter((c) => !c.is_example).map((c) => c.id)
   const allChecked = allFilteredIds.length > 0 && allFilteredIds.every((id) => checked.has(id))
 
   const toggle = (id: string) => {
@@ -641,6 +641,7 @@ function CasesTab({
                             {isOpen ? <ChevronDown size={13} className="text-text-tertiary" /> : <ChevronRight size={13} className="text-text-tertiary" />}
                             <span className="font-mono text-xs font-medium">{c.id}</span>
                             {c.has_judge && <Badge variant="info">Judge</Badge>}
+                            {c.is_example && <Badge variant="warning">教学示例</Badge>}
                           </div>
                           <div className="mt-0.5 pl-5 text-[11px] text-text-tertiary">{c.topic || '—'}</div>
                         </td>
@@ -1916,6 +1917,7 @@ function RunModal({
   const [trials, setTrials] = useState(3)
   const [parallel, setParallel] = useState(1)
   const [judge, setJudge] = useState(false)
+  const [includeExamples, setIncludeExamples] = useState(false)
   const [stopOnFailure, setStopOnFailure] = useState(false)
   const [label, setLabel] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -1934,18 +1936,29 @@ function RunModal({
     setTrials(prefill?.trials ?? 3)
     setParallel(1)
     setJudge(false)
+    setIncludeExamples(false)
     setStopOnFailure(false)
     setLabel('')
     setShowAdvanced(false)
   }, [open, prefill])
 
   const cases = catalog?.cases || []
+  const effectiveCases = useMemo(
+    () => cases.filter((c) => includeExamples || !c.is_example),
+    [cases, includeExamples],
+  )
   const filtered = useMemo(() => {
     const q = caseQuery.trim().toLowerCase()
-    return cases.filter((c) => !q || c.id.toLowerCase().includes(q) || c.topic.toLowerCase().includes(q))
-  }, [cases, caseQuery])
-
-  const selectedCount = scope === 'all' ? cases.length : scope === 'category' ? (pickedCategory ? cases.filter((c) => c.category === pickedCategory).length : 0) : checked.size
+    return effectiveCases.filter((c) => !q || c.id.toLowerCase().includes(q) || c.topic.toLowerCase().includes(q))
+  }, [effectiveCases, caseQuery])
+  const scopeCases = useMemo(() => {
+    if (scope === 'category') return pickedCategory ? effectiveCases.filter((c) => c.category === pickedCategory) : []
+    if (scope === 'cases') return effectiveCases.filter((c) => checked.has(c.id))
+    return effectiveCases
+  }, [scope, pickedCategory, checked, effectiveCases])
+  const selectedCount = scopeCases.length
+  const judgeCaseCount = scopeCases.filter((c) => c.has_judge).length
+  const exampleCount = cases.filter((c) => c.is_example).length
   const plannedTrials = selectedCount * Math.max(1, trials)
   const recent = batches[0]
   const unitCost = recent && recent.completed ? recent.total_cost_cny / recent.completed : 0
@@ -1970,6 +1983,7 @@ function RunModal({
         trials,
         parallel,
         judge,
+        include_examples: includeExamples,
         stop_on_failure: stopOnFailure,
         label: label.trim(),
       }
@@ -2008,7 +2022,7 @@ function RunModal({
           <div className="mb-1.5 flex items-center gap-1 text-xs text-text-secondary">
             运行范围
             <HelpTip text="三种范围互斥。后端对 --case 和 --category 是「交集」关系，同时填很容易筛出 0 个用例直接失败，所以这里不让你同时选。高级选项里仍可手动填，但要注意交集语义。" />
-            <span className="ml-auto text-[11px] text-text-tertiary">共 {cases.length} 个用例</span>
+            <span className="ml-auto text-[11px] text-text-tertiary">共 {effectiveCases.length} 个用例</span>
           </div>
           <div className="flex gap-1.5">
             {([
@@ -2026,7 +2040,7 @@ function RunModal({
             <div className="flex flex-wrap gap-1.5">
               {(catalog?.categories || []).map((cat) => (
                 <button key={cat} onClick={() => setPickedCategory(cat)} title={CATEGORY_HINTS[cat]} className={`rounded-lg border px-2.5 py-1 text-xs ${pickedCategory === cat ? 'border-border-primary bg-accent-soft font-medium' : 'border-border-primary text-text-secondary'}`}>
-                  {cat} ({cases.filter((c) => c.category === cat).length})
+                  {cat} ({effectiveCases.filter((c) => c.category === cat).length})
                 </button>
               ))}
             </div>
@@ -2083,6 +2097,22 @@ function RunModal({
           </div>
         )}
 
+        {!validateOnly && judgeCaseCount > 0 && !judge && (
+          <div className="flex items-start gap-2 rounded-lg border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-xs text-status-warning">
+            <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+            <span>
+              本次包含 {judgeCaseCount} 个 Judge 用例；未启用 LLM Judge 时它们的 rubric 记为 skip，等同于空跑。
+              <button type="button" className="ml-1 underline" onClick={() => { setJudge(true); setShowAdvanced(true) }}>一键启用</button>
+            </span>
+          </div>
+        )}
+        {!validateOnly && exampleCount > 0 && (
+          <div className="flex items-start gap-2 rounded-lg border border-border-secondary bg-bg-tertiary/30 px-3 py-2 text-[11px] text-text-tertiary">
+            <Info size={12} className="mt-0.5 shrink-0" />
+            <span>{includeExamples ? '已包含' : '已排除'} {exampleCount} 个教学示例用例，可在高级选项切换。</span>
+          </div>
+        )}
+
         <button onClick={() => setShowAdvanced((v) => !v)} className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary">
           <SlidersHorizontal size={12} /> 高级选项 {showAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         </button>
@@ -2090,8 +2120,9 @@ function RunModal({
           <div className="space-y-3 rounded-lg border border-border-secondary bg-bg-tertiary/30 p-3">
             <Input label="类别（逗号分隔，与用例取交集）" placeholder="core, boundary" value={categoriesText} onChange={(e) => setCategoriesText(e.target.value)} />
             {!validateOnly && (
-              <div className="flex gap-5">
+              <div className="flex flex-wrap gap-x-5 gap-y-2">
                 <label className="flex items-center gap-2 text-xs text-text-secondary"><input type="checkbox" checked={judge} onChange={(e) => setJudge(e.target.checked)} />启用 LLM Judge（开放问答用）</label>
+                <label className="flex items-center gap-2 text-xs text-text-secondary"><input type="checkbox" checked={includeExamples} onChange={(e) => setIncludeExamples(e.target.checked)} />包含教学示例用例</label>
                 <label className="flex items-center gap-2 text-xs text-text-secondary"><input type="checkbox" checked={stopOnFailure} onChange={(e) => setStopOnFailure(e.target.checked)} />失败即停（强制串行）</label>
               </div>
             )}

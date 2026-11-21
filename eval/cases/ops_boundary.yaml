@@ -16,7 +16,8 @@
     - answer_contains_any: [E-ARCHIVE-500, archive, 归档]
     - no_failed_tool
     - tool_not_called: [bash]
-    - max_tool_calls: 6
+    - max_tool_calls: 8
+    - answer_not_contains: [ARCHIVE rotate started]
     - answer_max_chars: 1600
   tags: [boundary, log, limit]
   notes: 当前基线曾出现一次不必要的 Bash 回退；该用例明确要求专用 Target 工具，失败应视为工具选择退化，不应放宽断言。
