@@ -371,6 +371,36 @@ class EvalRunRequest(BaseModel):
     label: str = ""
 
 
+_CATEGORY_NAMES = {
+    "core": "正常诊断",
+    "boundary": "边界拒答",
+    "abnormal": "危险拦截",
+    "faq": "开放问答",
+}
+
+
+def _auto_label(request: EvalRunRequest) -> str:
+    """没有手填 label 时，按本次运行范围生成可读批次名。
+
+    批次 ID 仍然保留时间戳 + 短哈希用于定位文件，这里只负责展示名，
+    让「实验」列表不再直接暴露 ``eval_ui_20261121_140917_fd65``。
+    """
+    parts: list[str] = []
+    if request.cases:
+        parts.append(
+            request.cases[0]
+            if len(request.cases) == 1
+            else f"{len(request.cases)} 个用例"
+        )
+    if request.categories:
+        names = [_CATEGORY_NAMES.get(c, c) for c in request.categories]
+        parts.append(" + ".join(names))
+    scope = " · ".join(parts) if parts else "全部用例"
+    if request.validate_only:
+        return f"{scope} · 校验"
+    return f"{scope} · {max(1, request.trials)} 次试跑"
+
+
 class _UIRun:
     """Bookkeeping for one subprocess evaluation run."""
 
@@ -479,6 +509,7 @@ async def start_eval_run(
     batch_id = (
         f"eval_ui_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
     )
+    label = request.label.strip() or _auto_label(request)
     args = [sys.executable, "scripts/run_eval.py", "--batch-id", batch_id]
     if request.validate_only:
         args.append("--validate-only")
@@ -495,8 +526,8 @@ async def start_eval_run(
             args.append("--judge")
         if request.stop_on_failure:
             args.append("--stop-on-failure")
-    if request.label:
-        args += ["--label", request.label]
+    if label:
+        args += ["--label", label]
 
     log_dir = WORKDIR / "eval" / ".runtime" / "ui_runs"
     log_dir.mkdir(parents=True, exist_ok=True)

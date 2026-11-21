@@ -66,6 +66,36 @@ const CATEGORY_HINTS: Record<string, string> = {
   faq: '开放式运维问答，没有标准答案，由 LLM Judge 按 rubric 评分。',
 }
 
+const CATEGORY_SHORT: Record<string, string> = {
+  core: '正常诊断',
+  boundary: '边界拒答',
+  abnormal: '危险拦截',
+  faq: '开放问答',
+}
+
+function formatBatchStamp(startedAt: number): string {
+  if (!startedAt) return ''
+  const d = new Date(startedAt * 1000)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** 旧报告没有 label 时，用类别 + 时间拼一个可读名字，避免直接展示裸 batch_id。 */
+function batchDisplayName(batch: {
+  label?: string
+  by_category?: Record<string, unknown>
+  started_at?: number
+}): string {
+  if (batch.label) return batch.label
+  const cats = Object.keys(batch.by_category || {})
+  const scope = cats.length
+    ? cats.map((c) => CATEGORY_SHORT[c] || c).join(' + ')
+    : '评估'
+  const stamp = formatBatchStamp(batch.started_at || 0)
+  return stamp ? `${scope} · ${stamp}` : scope
+}
+
 /** Wilson score interval，和后端 baseline.py 同公式，用于报告页的 CI 须线。 */
 function wilsonCI(passed: number, trials: number): [number, number] | null {
   if (trials <= 0) return null
@@ -747,7 +777,7 @@ function Sparkline({
         return (
           <g key={p.batch_id}>
             <title>
-              {`${p.label || p.batch_id} · ${Math.round(p.pass_rate * 100)}% · ${p.cases} 用例 / ${p.trials} 试跑${isBaseline ? ' · 基准 ★' : ''}${isCurrent ? ' · 当前选中' : ''}`}
+              {`${p.label || `${formatBatchStamp(p.started_at)} · ${p.cases} 用例`} · ${Math.round(p.pass_rate * 100)}% · ${p.cases} 用例 / ${p.trials} 试跑${isBaseline ? ' · 基准 ★' : ''}${isCurrent ? ' · 当前选中' : ''}`}
             </title>
             {(isBaseline || isCurrent) && (
               <circle
@@ -848,7 +878,7 @@ function ExperimentsTab({
                   active ? 'border-border-primary bg-accent-soft' : 'border-border-primary bg-bg-secondary hover:bg-bg-hover'
                 }`}
               >
-                <div className="truncate text-sm font-medium">{b.label || b.batch_id}</div>
+                <div className="truncate text-sm font-medium">{batchDisplayName(b)}</div>
                 <div className="mt-0.5 truncate font-mono text-[11px] text-text-tertiary">{shortId(b.batch_id)}</div>
                 <div className="mt-2 flex items-center gap-2">
                   <Badge variant={rateVariant(b.pass_rate)}>{Math.round(b.pass_rate * 100)}%</Badge>
@@ -2133,7 +2163,7 @@ function CompareSelect({ value, onChange, placeholder, batches, label }: { value
       {label && <span className="text-[11px] text-text-tertiary">{label}</span>}
       <select value={value} onChange={(e) => onChange(e.target.value)} className="max-w-[210px] rounded-lg border border-border-primary bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary">
         <option value="">{placeholder}</option>
-        {batches.map((b) => <option key={b.batch_id} value={b.batch_id}>{b.label ? `${b.label}（${shortId(b.batch_id)}）` : b.batch_id}</option>)}
+        {batches.map((b) => <option key={b.batch_id} value={b.batch_id}>{`${batchDisplayName(b)}（${shortId(b.batch_id)}）`}</option>)}
       </select>
     </label>
   )
