@@ -1,5 +1,5 @@
 import type { Message, Task, CronJob, CronLog, MCPServer, Tool, HealthStatus, StdioMCPConfig, SseMCPConfig, Skill, SkillDetail, Target, TargetBrowserResult, PendingAction } from '../types'
-import type { EvalBatchSummary, EvalReport, EvalComparison, EvalRunStatus } from '../types/eval'
+import type { EvalBatchSummary, EvalReport, EvalComparison, EvalRunStatus, EvalCaseCatalog, EvalMetrics } from '../types/eval'
 
 const API_BASE = ''
 const API_TOKEN = import.meta.env.VITE_API_TOKEN || ''
@@ -198,18 +198,29 @@ export interface EvalRunPayload {
   label?: string
 }
 
+export interface EvalCompareParams {
+  tolerance?: number
+  alpha?: number
+}
+
 export const evalApi = {
   batches: () =>
     request<{ batches: EvalBatchSummary[]; reports_dir: string }>(
       '/api/eval/batches'
     ),
+  cases: () => request<EvalCaseCatalog>('/api/eval/cases'),
+  metrics: () => request<EvalMetrics>('/api/eval/metrics'),
   report: (batchId: string) =>
     request<EvalReport>(`/api/eval/reports/${encodeURIComponent(batchId)}`),
-  compare: (baselineId: string, currentId: string) =>
-    request<EvalComparison>(
-      `/api/eval/compare?baseline=${encodeURIComponent(baselineId)}` +
-        `&current=${encodeURIComponent(currentId)}`
-    ),
+  compare: (baselineId: string, currentId: string, params?: EvalCompareParams) => {
+    const query = new URLSearchParams({
+      baseline: baselineId,
+      current: currentId,
+    })
+    if (params?.tolerance != null) query.set('tolerance', String(params.tolerance))
+    if (params?.alpha != null) query.set('alpha', String(params.alpha))
+    return request<EvalComparison>(`/api/eval/compare?${query.toString()}`)
+  },
   run: (payload: EvalRunPayload) =>
     request<{ run_id: string; args: string[] }>('/api/eval/run', {
       method: 'POST',

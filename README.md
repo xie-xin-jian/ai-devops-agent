@@ -395,6 +395,10 @@ POST   /api/mcp/stdio/connect
 POST   /api/mcp/sse/connect
 GET    /api/skills
 GET    /api/eval/batches
+GET    /api/eval/cases
+GET    /api/eval/metrics
+GET    /api/eval/reports/{batch_id}
+GET    /api/eval/compare
 POST   /api/eval/run
 GET    /api/eval/runs
 ```
@@ -440,6 +444,22 @@ python scripts/run_eval.py \
   --baseline eval/reports/baseline.json \
   --fail-on-regression
 ```
+
+### 评估工作台（Web UI）
+
+`/ui/` 的「评估」页是三 Tab 工作台，所有接口均为只读扫描或受控触发，不修改统计内核：
+
+| Tab | 能力 | 主要接口 |
+|---|---|---|
+| 用例库 | 读 `eval/cases/*.yaml`，18 个用例按类别分组，可搜索 / 勾选 / 展开完整定义，显示上次通过率与 Wilson CI；勾选后一键带入运行弹窗 | `GET /api/eval/cases` |
+| 实验 | 批次卡片、设为基准 ★、报告下钻到逐试次规则断言与工具调用；跨批次通过率 sparkline（手写 SVG，零新依赖） | `GET /api/eval/batches` / `reports/{batch_id}` / `metrics` |
+| 对比 | 回归门禁三态结论（可合入 / 样本不足 / 阻断）、整体指标卡、规则级 diff、两批逐试次 trace 并排 | `GET /api/eval/compare` |
+
+`POST /api/eval/run` 需 `ACTION_APPROVE` 权限，起 `scripts/run_eval.py` 子进程（单实例锁，重复请求返回 409），是**唯一会产生模型费用**的动作；`GET /api/eval/runs` 轮询状态与 `completed/total` 进度。运行弹窗支持「全部 / 按类别 / 指定用例」三种互斥范围、成本预估（仅供参考，实际以报告 usage 为准）和 `--validate-only` 免费校验。
+
+统计口径：`agent/evaluation/baseline.py` 负责 Wilson 区间与单侧双比例 z 检验；`/compare` 在路由层附加 `verdict` 三态，其中只有 `significance == "significant"` 的回归才会阻断，高危但样本不足的用例不会被误判为阻断。
+
+> 前端产物 `static/` 在 `.gitignore` 中**不入库**，CI 只跑 pytest、不构建前端。修改 `frontend/` 后需在部署机执行 `cd frontend && npm run build`，并把生成的 `static/` 同步到服务端，否则线上仍是旧页面。
 
 回归判断在两侧样本均不少于 5 个 Trial 时使用单侧双比例检验。样本不足时退回数值下降判定。
 

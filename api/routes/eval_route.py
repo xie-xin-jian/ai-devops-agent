@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import defaultdict
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -49,6 +50,54 @@ _SUMMARY_KEYS = (
 
 def _reports_dir() -> Path:
     return (WORKDIR / "eval" / "reports").resolve()
+
+
+def _cases_dir() -> Path:
+    return (WORKDIR / "eval" / "cases").resolve()
+
+
+def _fixtures_dir() -> Path:
+    return (WORKDIR / "eval" / "fixtures").resolve()
+
+
+def _case_history() -> dict[str, dict]:
+    """Aggregate each case's most recent pass rate across all reports.
+
+    Reports are visited newest-first; the first report containing a case id
+    wins, so the UI shows "how did this case do last time it was run".
+    """
+    reports: list[tuple[float, str, dict]] = []
+    for path in _reports_dir().glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or not isinstance(
+            data.get("results"), list
+        ):
+            continue
+        reports.append((float(data.get("started_at") or 0), path.stem, data))
+    reports.sort(key=lambda item: item[0], reverse=True)
+
+    history: dict[str, dict] = {}
+    for _, batch_id, data in reports:
+        grouped: dict[str, list[dict]] = defaultdict(list)
+        for result in data["results"]:
+            if isinstance(result, dict) and result.get("case_id"):
+                grouped[str(result["case_id"])].append(result)
+        for case_id, trials in grouped.items():
+            if case_id in history:
+                continue
+            completed = [t for t in trials if t.get("status") == "completed"]
+            passed = [t for t in completed if t.get("passed")]
+            history[case_id] = {
+                "last_pass_rate": (
+                    len(passed) / len(completed) if completed else None
+                ),
+                "last_trials": len(completed),
+                "last_batch_id": str(data.get("batch_id") or batch_id),
+            }
+    return history
 
 
 def _load_report(batch_id: str) -> dict:
@@ -104,6 +153,109 @@ async def list_eval_batches(
     return {"batches": batches, "reports_dir": str(_reports_dir())}
 
 
+@router.get("/metrics")
+async def eval_metrics(
+    _principal: Principal = Depends(require_permissions(AUDIT_VIEW)),
+):
+    """Cross-batch time series backing the experiments sparkline.
+
+    Read-only: scans ``eval/reports/*.json`` and returns one pass-rate point
+    per batch in chronological order. Report files are never modified and
+    nothing is persisted. AI evaluation rarely reaches 100%, so tracking how
+    the pass rate moves across batches is more useful than any single score.
+    """
+    points = []
+    for path in sorted(_reports_dir().glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or not isinstance(
+            data.get("results"), list
+        ):
+            continue
+        completed = int(data.get("completed") or 0)
+        passed = int(data.get("passed") or 0)
+        pass_rate = data.get("pass_rate")
+        if pass_rate is None:
+            pass_rate = passed / completed if completed else 0.0
+        cases = {
+            str(result["case_id"])
+            for result in data["results"]
+            if isinstance(result, dict) and result.get("case_id")
+        }
+        points.append({
+            "batch_id": str(data.get("batch_id") or path.stem),
+            "label": str(data.get("label") or ""),
+            "started_at": float(data.get("started_at") or 0),
+            "pass_rate": float(pass_rate or 0),
+            "total_cost_cny": float(data.get("total_cost_cny") or 0),
+            "cases": len(cases),
+            "trials": completed,
+        })
+    points.sort(key=lambda item: item["started_at"])
+    return {
+        "points": points,
+        "total": len(points),
+        "reports_dir": str(_reports_dir()),
+    }
+
+
+@router.get("/cases")
+async def list_eval_cases(
+    _principal: Principal = Depends(require_permissions(AUDIT_VIEW)),
+):
+    """Read-only catalog of evaluation cases with recent pass rates.
+
+    Parses ``eval/cases/*.yaml`` using the same loader as ``run_eval.py`` so
+    the UI can show exactly which cases exist (and how they last performed)
+    instead of asking users to type ids into a free-text field.
+    """
+    from agent.evaluation.cases import (
+        CATEGORIES,
+        load_cases,
+        rule_name,
+        validate_cases,
+    )
+
+    cases, load_errors = load_cases(_cases_dir())
+    validation_errors = validate_cases(cases, _fixtures_dir())
+    history = _case_history()
+
+    items = []
+    for case in cases:
+        stat = history.get(case.id, {})
+        items.append({
+            "id": case.id,
+            "category": case.category,
+            "topic": case.topic,
+            "severity": case.severity,
+            "prompt": case.prompt,
+            "fixture": case.fixture,
+            "service": case.service,
+            "approvals": case.approvals,
+            "timeout_seconds": case.timeout_seconds,
+            "max_turns": case.max_turns,
+            "expect_count": len(case.expect),
+            "expect_rules": [
+                name for name in (rule_name(r) for r in case.expect) if name
+            ],
+            "tags": list(case.tags),
+            "notes": case.notes,
+            "has_judge": bool(case.judge_rubric),
+            "source": case.source,
+            "last_pass_rate": stat.get("last_pass_rate"),
+            "last_trials": stat.get("last_trials", 0),
+            "last_batch_id": stat.get("last_batch_id", ""),
+        })
+    return {
+        "cases": items,
+        "categories": sorted(CATEGORIES),
+        "total": len(items),
+        "errors": load_errors + validation_errors,
+    }
+
+
 @router.get("/reports/{batch_id}")
 async def get_eval_report(
     batch_id: str,
@@ -126,12 +278,84 @@ async def compare_eval_reports(
 
     baseline_report = _load_report(baseline)
     current_report = _load_report(current)
-    return compare_reports(
+    comparison = compare_reports(
         baseline_report,
         current_report,
         tolerance=max(0.0, tolerance),
         alpha=min(max(float(alpha), 0.0), 1.0),
     )
+    comparison["verdict"] = _build_verdict(comparison)
+    return comparison
+
+
+def _build_verdict(comparison: dict) -> dict:
+    """Reduce a comparison to one three-state CI gate decision.
+
+    Kept at the route layer so the statistical core (baseline.py) stays
+    untouched: the API merely annotates its output for the UI.
+    """
+    regressions = comparison.get("regressions") or []
+    high = comparison.get("high_severity_regressions") or []
+    all_items = (
+        regressions
+        + (comparison.get("improvements") or [])
+        + (comparison.get("drops_within_noise") or [])
+    )
+    significant = [
+        item for item in regressions
+        if item.get("significance") == "significant"
+    ]
+    insufficient = {
+        str(item.get("case_id"))
+        for item in all_items
+        if item.get("significance") == "insufficient-samples"
+    }
+    alpha = comparison.get("alpha", 0.05)
+    min_samples = comparison.get("min_samples", 5)
+
+    # Only statistically-confirmed regressions block the gate. A high
+    # severity case whose samples are insufficient is NOT a confirmed
+    # regression (the z-test never ran), so severity must not pre-empt the
+    # significance check here -- otherwise every small-sample demo report
+    # would show a misleading hard "blocked".
+    if significant:
+        status = "blocked"
+        notable = sum(
+            1 for item in significant if item.get("severity") == "high"
+        )
+        detail = f"{len(significant)} 个统计显著回归 (p < {alpha})"
+        if notable:
+            detail += f"，其中 {notable} 个高危"
+        reason = detail + "，建议阻断合入"
+    elif any(
+        item.get("significance") == "insufficient-samples"
+        for item in regressions
+    ):
+        status = "insufficient"
+        reason = (
+            f"检测到数值下降，但用例试跑次数不足 {min_samples}，"
+            "显著性门禁未生效，建议用 --trials 10 重跑后再判定"
+        )
+    elif insufficient and len(insufficient) == len(all_items):
+        status = "insufficient"
+        reason = (
+            f"全部 {len(insufficient)} 个对比用例样本不足 {min_samples} 次，"
+            "显著性门禁未生效，建议用 --trials 10 重跑"
+        )
+    else:
+        status = "pass"
+        reason = "未检测到显著回归，可合入"
+
+    return {
+        "status": status,
+        "reason": reason,
+        "alpha": alpha,
+        "min_samples": min_samples,
+        "tolerance": comparison.get("tolerance", 0.0),
+        "significant_regressions": len(significant),
+        "high_severity_regressions": len(high),
+        "insufficient_cases": len(insufficient),
+    }
 
 
 class EvalRunRequest(BaseModel):
@@ -158,6 +382,42 @@ class _UIRun:
         self.proc = proc
         self.request = request
         self.started_at = time.time()
+        self._planned_trials = 0
+        self._peak_completed = 0
+
+    def _progress(self) -> tuple[int, int]:
+        """Best-effort (completed, total) without touching the runner.
+
+        ``total`` comes from the ``selection`` line printed by run_eval.py;
+        ``completed`` counts trial_* workspace dirs. Those dirs are deleted
+        after each trial, so a monotonic high-water mark avoids regressions.
+        """
+        log = _read_log_tail(self.log_path, lines=200)
+        if not self._planned_trials:
+            match = re.search(r'"planned_trials"\s*:\s*(\d+)', log)
+            if match:
+                self._planned_trials = int(match.group(1))
+        total = self._planned_trials
+        exit_code = self.proc.poll()
+        if exit_code == 0 and total:
+            return total, total
+
+        workspaces = (
+            WORKDIR / "eval" / ".runtime" / self.batch_id / "workspaces"
+        )
+        try:
+            running = sum(
+                1
+                for case_dir in workspaces.iterdir()
+                if case_dir.is_dir()
+                for trial in case_dir.iterdir()
+                if trial.is_dir() and trial.name.startswith("trial_")
+            )
+        except OSError:
+            running = 0
+        self._peak_completed = max(self._peak_completed, running)
+        completed = min(self._peak_completed, total) if total else self._peak_completed
+        return completed, total
 
     def status(self) -> dict:
         exit_code = self.proc.poll()
@@ -165,6 +425,7 @@ class _UIRun:
             status = "running"
         else:
             status = "completed" if exit_code == 0 else "failed"
+        completed, total = self._progress() if not self.request.validate_only else (0, 0)
         return {
             "run_id": self.batch_id,
             "status": status,
@@ -178,6 +439,8 @@ class _UIRun:
             "trials": self.request.trials,
             "parallel": self.request.parallel,
             "judge": self.request.judge,
+            "completed": completed,
+            "total": total,
             "log_tail": _read_log_tail(self.log_path),
         }
 
