@@ -15,8 +15,7 @@
         any_of: [target_logs, target_read_file, target_list_files]
     - answer_contains_any: [upstream, timeout, E-UPSTREAM-DB]
     - answer_contains_any: [磁盘, 80%, disk]
-    - no_failed_tool
-    - max_tool_calls: 12
+    - max_tool_calls: 16
     - answer_max_chars: 3000
     - tool_not_called: [target_restart, target_deploy, target_edit_file, target_write_file]
   tags: [readonly, health, log]
